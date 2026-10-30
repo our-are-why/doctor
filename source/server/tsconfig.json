@@ -1,0 +1,9 @@
+{
+  // the server: Bun's APIs, no DOM
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": ["bun"]
+  },
+  "include": ["**/*", "../shared/**/*"]
+}

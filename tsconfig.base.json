@@ -1,0 +1,32 @@
+{
+  // The rules every part of doctor is checked with. Each part's own
+  // tsconfig.json adds only what that part may use: the DOM for
+  // source/client/, Bun for source/server/ and scripts/.
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    // Bun bundles and runs the code; tsc only checks it
+    "noEmit": true,
+    // imports name the file they import, extension included
+    "allowImportingTsExtensions": true,
+    // lets a CSS module's declaration (App.module.d.css.ts, written by
+    // bun run makeCssTypes) type the stylesheet's import
+    "allowArbitraryExtensions": true,
+    // only syntax that erasing the types leaves as plain JavaScript: no
+    // enums, namespaces or parameter properties, and `import type` for
+    // anything only types use
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  }
+}

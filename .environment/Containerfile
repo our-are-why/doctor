@@ -1,0 +1,10 @@
+# Shared dev tooling comes from image_develop-base: see
+# .apple-container/image_develop-base/
+FROM image_develop-base
+
+# Bun runs doctor's server (bun run startServer), bundles its browser app,
+# installs its packages and compiles the single binary (bun run build). It's
+# one binary; copy it straight out of its official multi-arch image, which is
+# built on the same Debian release as the base: https://bun.com/docs/installation
+COPY --from=oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 \
+    /usr/local/bin/bun /usr/local/bin/bun

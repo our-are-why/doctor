@@ -1,0 +1,15 @@
+# code-server's data for this project: extensions and editor state
+.coder-data/
+
+# macOS Finder metadata
+.DS_Store
+
+# the packages bun install fetches; bun.lock records their versions
+node_modules/
+
+# the binary that bun run build compiles
+build/
+
+# CSS modules' declarations, which bun run makeCssTypes writes beside each
+# stylesheet
+*.module.d.css.ts

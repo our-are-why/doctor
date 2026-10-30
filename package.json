@@ -1,0 +1,24 @@
+{
+  "name": "doctor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "startServer": "bun run makeCssTypes && DOCTOR_DEVELOPMENT=1 bun --hot source/server/main.ts",
+    "makeCssTypes": "bun scripts/makeCssTypes.ts",
+    "watchCssTypes": "bun scripts/makeCssTypes.ts --watch",
+    "check": "bun run makeCssTypes && tsc -p tsconfig.json && tsc -p source/client && tsc -p source/server",
+    "build": "bun build source/server/main.ts --compile --production --target=bun-linux-arm64 --outfile build/doctor"
+  },
+  "dependencies": {
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0",
+    "@xterm/xterm": "6.0.0",
+    "preact": "11.1.0",
+    "valibot": "1.5.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "lightningcss": "1.33.0",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,3 @@
+# bun add writes exact versions into package.json, like the ones already there
+[install]
+exact = true

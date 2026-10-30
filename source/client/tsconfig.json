@@ -1,0 +1,12 @@
+{
+  // the browser app: the DOM and Preact's JSX, none of Bun's APIs. Bun's
+  // bundler reads the JSX settings here too.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": [],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
+  },
+  "include": ["**/*", "../shared/**/*"]
+}
