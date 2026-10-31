@@ -1,0 +1,6 @@
+{
+  // two-space indents everywhere, whatever a file seems to use
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.detectIndentation": false
+}
