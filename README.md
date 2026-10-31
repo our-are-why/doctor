@@ -41,6 +41,8 @@ doctor is then at http://localhost:3004. While you edit stylesheets,
     source/server/   the server
     source/shared/   code both import, once there is some
     scripts/         the project's own tools, like makeCssTypes.ts
+    notes/           how types are built (type-construction.md)
+    notes/experiments/  write-ups of experiments, like pty-terminal.md
 
 Every part is checked against `tsconfig.base.json`'s rules plus only what
 that part may use: the app gets the DOM and none of Bun's APIs, the server

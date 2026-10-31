@@ -6,9 +6,8 @@ in short. this file has the reasons behind them, what's untested, and what's
 next. the setup session's memory doesn't carry over (`~/.claude` lives inside
 each container), so this file is the record.
 
-a second session (2026-10-30) has since run the setup and the
-`Bun.Terminal` spike: what it found, tried and recommends is in
-`learnings.md`, which is newer where the two disagree.
+a second session (2026-10-30) has since run the setup (it works) and the
+`Bun.Terminal` spike, written up in `notes/experiments/pty-terminal.md`.
 
 ## what this project is
 
