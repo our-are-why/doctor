@@ -173,6 +173,8 @@ struck). they're listed, not given a two-option status each:
   edits; a detached note's record of those words is a frozen fact, never
   searched for. sharing one type would invite code to search a node that no
   longer exists. this is the hard one to spot, because the types line up.
+  it reaches primitives too: two strings with different meanings are two
+  roles, not one string.
 - **one concept, one type.** "a node in some document" is one type, used by a
   task's scope and by a link alike.
 
@@ -228,9 +230,6 @@ which moves between them are legal, and what each move gives back.
 - **each transition is a function type.** it goes from the variant it takes
   to the variant it gives back, so only legal transitions type-check, and
   code that completes a task has to prove nothing is still waiting.
-- **history only moves forward.** an entry, once made, stays as it is;
-  correcting it is a new entry. the types reflect that: an applied change is
-  immutable, and old content comes back as a new change.
 
 ## parse, don't validate
 
@@ -245,14 +244,20 @@ which moves between them are legal, and what each move gives back.
   changes once it's parsed. what relates it to something that can change (an
   id that existed, a sibling that was a child of its parent) was valid when
   parsed, and is consulted again wherever it matters.
-- **proofs originate in one place.** only the parser declares a brand; a cast
-  anywhere else could forge a proof.
-- **how it works in typescript.** data not yet parsed is typed `unknown`. a
-  brand is compile-time only: an intersection with a phantom property keyed
-  by a unique symbol that's declared, never created, so nothing at runtime
-  has it and nothing outside its file can name it. the parser checks in
-  layers: shape against the type, then each value's constraints, recorded
-  with a brand, then relations.
+- **a primitive's mark is a role or a proof.** a role says what a primitive
+  means (a node's id, a passage's quote); a proof says what it passed (a
+  URL, an ISO time, a whole number from 1). where the constraint is a format
+  or grammar, the proof is named for it, not for a stand-in like "not
+  empty".
+- **proofs originate in one place.** only the parser declares a proof; a cast
+  anywhere else could forge one. a role is declared where a value takes it
+  on: by the parser, or where doctor makes a new one, like a fresh id.
+- **how it works in typescript.** data not yet parsed is typed `unknown`.
+  roles and proofs are both brands, compile-time only: an intersection with
+  a phantom property keyed by a unique symbol that's declared, never
+  created, so nothing at runtime has it and nothing outside its file can
+  name it. the parser checks in layers: shape against the type, then each
+  value's constraints, recorded with proofs, then relations.
 
 ## what types don't solve
 
@@ -261,7 +266,7 @@ is, the forms it takes, how it moves between them. some problems sit outside
 it, in principle or in practice, and the urge to solve them in types anyway
 is worth catching: a type stretched to cover them grows complicated, and
 still can't promise what it claims. those are solved outside the type
-system, and where a type stops short of a rule, a comment beside it says so.
+system.
 
 the balance itself, how much state is enumerated in types and how much stays
 as data, is found through taste and downstream use: a piece of state is

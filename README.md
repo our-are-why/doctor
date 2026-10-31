@@ -32,22 +32,21 @@ doctor is then at http://localhost:3004. While you edit stylesheets,
 | `bun run startServer`   | serves doctor for development: the app is bundled as it's requested and rebundled when its files change (refresh the page; HMR is off, see `source/server/main.ts`), and the server reloads when its own files do |
 | `bun run makeCssTypes`  | writes each CSS module's declaration, `App.module.d.css.ts` beside `App.module.css` |
 | `bun run watchCssTypes` | the same, again whenever a stylesheet changes            |
-| `bun run check`         | type-checks scripts/, the app and the server, each against its own tsconfig |
+| `bun run check`         | type-checks scripts/, the app, the server and source/shared/, each against its own tsconfig |
 | `bun run build`         | compiles doctor, app included, into one binary for linux-arm64: `build/doctor` |
 
 ## Layout
 
     source/client/   the browser app: Preact with hooks, CSS modules in styles/
     source/server/   the server
-    source/shared/   code both import, once there is some
+    source/shared/   what both import: the domain's types, in domain.ts
     scripts/         the project's own tools, like makeCssTypes.ts
     notes/           how types are built (type-construction.md)
     notes/experiments/  write-ups of experiments, like pty-terminal.md
 
 Every part is checked against `tsconfig.base.json`'s rules plus only what
 that part may use: the app gets the DOM and none of Bun's APIs, the server
-and scripts get Bun's APIs and no DOM. When `source/shared/` gets its first
-file, give it a `tsconfig.json` with neither, and add it to `bun run check`.
+and scripts get Bun's APIs and no DOM, and `source/shared/` gets neither.
 
 ## Design
 

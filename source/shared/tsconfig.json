@@ -1,0 +1,9 @@
+{
+  // code both the app and the server import: neither the DOM nor Bun's APIs
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": []
+  },
+  "include": ["**/*"]
+}
