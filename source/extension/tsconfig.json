@@ -1,9 +1,10 @@
 {
-  // the server: Bun's APIs, no DOM
+  // the extension, in VS Code's Node extension host: Node's and VS Code's
+  // APIs, no DOM, no Bun
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2024"],
-    "types": ["bun"]
+    "types": ["node", "vscode"]
   },
   "include": ["**/*", "../shared/**/*"]
 }

@@ -1,0 +1,21 @@
+{
+  "name": "doctor",
+  "publisher": "our-are-why",
+  "displayName": "doctor",
+  "description": "Read, edit and annotate documents beside an agent",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.140.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished", "onWebviewPanel:doctor.dashboard"],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "doctor.document",
+        "displayName": "doctor document",
+        "selector": [{ "filenamePattern": "*.doctor.json" }],
+        "priority": "default"
+      }
+    ],
+    "commands": [{ "command": "doctor.openDashboard", "title": "doctor: open the task dashboard" }]
+  }
+}

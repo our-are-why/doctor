@@ -1,11 +1,11 @@
 # doctor
 
-Reads and annotates markdown, beside one terminal for working with an agent
-such as Claude Code. A Bun server and a Preact app in the browser, shipped as
-a single Linux binary.
+Reads, edits and annotates documents beside an agent such as Claude Code. A
+VS Code extension for code-server: its document editor and task dashboard
+are webviews, and the agent works in VS Code's own terminal.
 
-So far it's the project's setup: the server serves a placeholder page, and
-nothing else is built yet.
+So far it's the extension's skeleton: the editor and the dashboard connect
+to the extension, and nothing else is built yet.
 
 ## Develop
 
@@ -19,68 +19,72 @@ Open code-server at http://localhost:8085 and, in its terminal, run:
 
     cd ~/project
     bun install
-    bun run startServer
+    bun run installExtension
 
-doctor is then at http://localhost:3004. While you edit stylesheets,
-`bun run watchCssTypes` in a second terminal keeps their types current.
-`bun install` writes `bun.lock`, which is committed.
+then reload the window (Developer: Reload Window). In code-server:
+
+- any `*.doctor.json` file opens in doctor's document editor;
+- "doctor: open the task dashboard" opens the dashboard as an editor tab;
+- "Terminal: Create New Terminal in Editor Area" puts a terminal beside them.
+
+While you edit stylesheets, `bun run watchCssTypes` in a second terminal
+keeps their types current. `bun install` writes `bun.lock`, which is
+committed.
 
 ## Scripts
 
-| Script                  | What it does                                            |
-|-------------------------|---------------------------------------------------------|
-| `bun run startServer`   | serves doctor for development: the app is bundled as it's requested and rebundled when its files change (refresh the page; HMR is off, see `source/server/main.ts`), and the server reloads when its own files do |
-| `bun run makeCssTypes`  | writes each CSS module's declaration, `App.module.d.css.ts` beside `App.module.css` |
-| `bun run watchCssTypes` | the same, again whenever a stylesheet changes            |
-| `bun run check`         | type-checks scripts/, the app, the server and source/shared/, each against its own tsconfig |
-| `bun run build`         | compiles doctor, app included, into one binary for linux-arm64: `build/doctor` |
+| Script                     | What it does                                             |
+|----------------------------|----------------------------------------------------------|
+| `bun run makeCssTypes`     | writes each CSS module's declaration, `Shell.module.d.css.ts` beside `Shell.module.css` |
+| `bun run watchCssTypes`    | the same, again whenever a stylesheet changes             |
+| `bun run check`            | type-checks scripts/, the extension, the webviews and source/shared/, each against its own tsconfig |
+| `bun run buildExtension`   | bundles the extension and its webviews into `build/extension/`, and packs them as `build/doctor-<version>.vsix` |
+| `bun run installExtension` | builds the extension and installs it into this container's code-server |
 
 ## Layout
 
-    source/client/   the browser app: Preact with hooks, CSS modules in styles/
-    source/server/   the server
-    source/shared/   what both import: the domain's types, in domain.ts
-    scripts/         the project's own tools, like makeCssTypes.ts
-    notes/           how types are built (type-construction.md)
-    notes/experiments/  write-ups of experiments, like pty-terminal.md
+    source/extension/   the extension, in VS Code's Node extension host: its
+                        server, the document editor and the dashboard;
+                        manifest.json becomes the extension's package.json
+    source/webview/     the webviews, in the browser: Preact with hooks, CSS
+                        modules in styles/, one entry point per webview in
+                        entries/
+    source/shared/      what both import: the domain's types (domain.ts), the
+                        protocol between them, and parsing
+    scripts/            the project's own tools: building and installing the
+                        extension, makeCssTypes.ts
+    notes/              how types are built (type-construction.md)
+    notes/experiments/  write-ups of experiments, like vscode-extension.md
 
 Every part is checked against `tsconfig.base.json`'s rules plus only what
-that part may use: the app gets the DOM and none of Bun's APIs, the server
-and scripts get Bun's APIs and no DOM, and `source/shared/` gets neither.
+that part may use: the extension gets Node's and VS Code's APIs and no DOM,
+the webviews get the DOM and nothing else, `source/shared/` gets neither, and
+scripts/ gets Bun's APIs.
+
+The project folder is case-insensitive (it's a macOS volume), so two files
+whose names differ only in case can't sit side by side.
 
 ## Design
 
 What doctor is built from, and why:
 
-- **Bun** compiles the server, the app and the runtime into one binary, and
-  has a PTY built in, so no native add-on has to be unpacked at run time.
-- **One terminal.** doctor runs a single PTY with
-  `bash -lc '<harness>; exec bash -l'`, `claude` being the default harness.
-  Quitting the agent leaves a shell, and switching harnesses is typing
-  another command.
-- **The terminal is doctor's only link to the agent**, so any harness works.
-  doctor hands text to the agent as a bracketed paste, and sees the agent's
-  work through the files it edits.
-- **A copy of the terminal on the server** (`@xterm/headless`) restores the
-  screen after a reload or a reconnect. Bun's PTY can't pause reading, so the
-  copy has a size cap: past it, output is dropped, and the gap is marked. One
-  tab writes at a time; a new tab takes over.
-- **One WebSocket** carries everything: JSON control messages, checked with
-  Valibot, and the terminal's bytes as binary frames. The browser grants the
-  terminal credits, so its output can't crowd out the rest.
+- **A VS Code extension.** VS Code supplies the terminal, the layout and
+  everything around them; doctor adds a document editor (a custom editor for
+  `*.doctor.json`) and a task dashboard (a webview panel).
+- **One endpoint.** The extension runs an HTTP and WebSocket server on
+  `127.0.0.1`, at a free port. Webviews reach it through code-server's proxy
+  (`vscode.env.asExternalUri`), and the agent's command reaches it directly.
+  Each kind of caller, the human or the agent, has its own token; every new
+  terminal gets the agent's in `DOCTOR_TOKEN`, with the address in
+  `DOCTOR_ENDPOINT`.
+- **Every boundary is parsed.** Messages, webview configs and files are
+  checked with Valibot into the domain's types, through a helper written
+  against the Standard Schema interface.
+- **Bun is the development tooling**: package manager, bundler and script
+  runner. Nothing that ships runs on it: the extension runs in VS Code's Node
+  host, the webviews in the browser.
 - **CSS modules** come from Bun's bundler, and their types from
   `scripts/makeCssTypes.ts`, since TypeScript 7 dropped the editor plugins
   that typed them before.
 - **TypeScript 7**, with the strict flags in `tsconfig.base.json`, and only
   syntax that erasing the types leaves as plain JavaScript.
-
-## Before the terminal goes in
-
-- Spawn through `env -C <dir>`, never with a working directory. Bun spawns
-  with vfork and changes directory inside it, so a hung filesystem would
-  freeze doctor, and the project folders here are virtiofs mounts from the
-  Mac.
-- Check the `Origin` of every WebSocket upgrade. Any page open in the browser
-  can open a WebSocket to localhost, and doctor's would hand it a shell.
-- Once doctor is the container's main app, run it behind dumb-init, so the
-  shell's orphaned processes get reaped.

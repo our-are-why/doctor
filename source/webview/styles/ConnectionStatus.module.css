@@ -1,0 +1,18 @@
+.connecting,
+.open,
+.closed {
+  font-size: 0.85em;
+  margin: 0;
+}
+
+.connecting {
+  color: var(--vscode-descriptionForeground);
+}
+
+.open {
+  color: var(--vscode-testing-iconPassed);
+}
+
+.closed {
+  color: var(--vscode-errorForeground);
+}
