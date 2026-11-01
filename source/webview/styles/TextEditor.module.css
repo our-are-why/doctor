@@ -125,6 +125,33 @@
   text-underline-offset: 2px;
 }
 
+/* the input that links the selection */
+
+.linkBox {
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border, transparent);
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  padding: 4px;
+}
+
+.linkInput {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  outline: none;
+  padding: 2px 6px;
+  width: 24em;
+}
+
+.linkInput:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.linkInvalid .linkInput {
+  border-color: var(--vscode-inputValidation-errorBorder);
+}
+
 /* the stand-in proposal */
 
 .removed {

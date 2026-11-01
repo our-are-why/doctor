@@ -169,6 +169,24 @@ export function toggleContrast(
   };
 }
 
+// Links [start, end) to the target, or unlinks it when there's none; a link
+// already over any of it is cut back to what lies outside.
+export function relink(
+  text: _Text_Doctor_,
+  start: number,
+  end: number,
+  targets: Array<_Target_Link_>,
+): _Text_Doctor_ {
+  if (end <= start) return text;
+  const kept = text.overlay.flatMap((mark) =>
+    mark.kind !== "link" || mark.to <= start || mark.from >= end
+      ? [mark]
+      : [withRange(mark, mark.from, Math.min(mark.to, start)), withRange(mark, Math.max(mark.from, end), mark.to)],
+  );
+  const added = targets.map((target): _LINK_Mark__Text_ => ({ kind: "link", target, from: offset(start), to: offset(end) }));
+  return { ...text, overlay: settle([...kept, ...added]) };
+}
+
 function sameTarget(first: _Target_Link_, second: _Target_Link_): boolean {
   switch (first.kind) {
     case "external":

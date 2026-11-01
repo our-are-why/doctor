@@ -8,8 +8,9 @@ import type {
   _Operation_Change_,
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
-import { contentStart, project } from "../shared/projection.ts";
-import { lengthOf, segmentsOf, toggleContrast, type _Segment_Text_ } from "../shared/text.ts";
+import { contentStart, project, startsBlock } from "../shared/projection.ts";
+import { readTarget, writeTarget } from "../shared/target.ts";
+import { lengthOf, relink, segmentsOf, toggleContrast, type _Segment_Text_ } from "../shared/text.ts";
 import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
 import * as monaco from "./monaco.ts";
 import "./styles/monaco.css";
@@ -508,6 +509,183 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   action("doctor.highlighted", "doctor: highlighted", [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyH], () => toggle("highlighted"));
   action("doctor.struck", "doctor: struck", [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyX], () => toggle("struck"));
 
+  // linking: a small input beside the selection, or beside the link the caret
+  // is in, takes a target; an empty one unlinks
+  const linkBox = document.createElement("div");
+  linkBox.className = styles.linkBox;
+  const linkInput = document.createElement("input");
+  linkInput.className = styles.linkInput;
+  linkInput.placeholder = "https://…, doc:… or doc:…#…";
+  linkBox.append(linkInput);
+  let linking: Array<{ holder: _Holder_Text_; before: _Text_Doctor_; from: number; to: number; at: monaco.IPosition }> = [];
+  const linkWidget: monaco.editor.IContentWidget = {
+    getId: () => "doctor.link",
+    getDomNode: () => linkBox,
+    getPosition: () => {
+      const [place] = linking;
+      return place === undefined
+        ? null
+        : {
+            position: place.at,
+            preference: [monaco.editor.ContentWidgetPositionPreference.BELOW, monaco.editor.ContentWidgetPositionPreference.ABOVE],
+          };
+    },
+  };
+  const closeLink = () => {
+    if (linking.length === 0) return;
+    linking = [];
+    editor.removeContentWidget(linkWidget);
+    editor.focus();
+  };
+  const openLink = () => {
+    const [document] = documents;
+    const selection = editor.getSelection();
+    if (document === undefined || selection === null || selection.startLineNumber !== selection.endLineNumber) return;
+    const line = selection.startLineNumber;
+    const [holder] = holderAt(line, ownersNow());
+    const [before] = holder === undefined ? [] : textAt(document, holder);
+    if (holder === undefined || before === undefined) return;
+    const content = model.getLineContent(line);
+    const start = contentStart(content);
+    const body = content.slice(start);
+    if (body !== before.text) return;
+    let from = pointsOf(body, Math.max(selection.startColumn - 1 - start, 0));
+    let to = pointsOf(body, Math.max(selection.endColumn - 1 - start, 0));
+    const [existing] = before.overlay.filter(
+      (mark): mark is _LINK_Mark__Text_ => mark.kind === "link" && (from === to ? mark.from <= from && mark.to > from : mark.from < to && mark.to > from),
+    );
+    if (from === to) {
+      if (existing === undefined) return;
+      from = existing.from;
+      to = existing.to;
+    }
+    linking = [{ holder, before, from, to, at: { lineNumber: line, column: start + unitsOf(body, from) + 1 } }];
+    linkInput.value = existing === undefined ? "" : writeTarget(existing.target);
+    linkBox.classList.remove(styles.linkInvalid);
+    editor.addContentWidget(linkWidget);
+    linkInput.focus();
+    linkInput.select();
+  };
+  linkInput.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Escape") closeLink();
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const written = linkInput.value.trim();
+    const targets = written === "" ? [] : readTarget(written);
+    if (written !== "" && targets.length === 0) {
+      linkBox.classList.add(styles.linkInvalid);
+      return;
+    }
+    const [place] = linking;
+    closeLink();
+    if (place === undefined) return;
+    hooks.perform(() => textOperations(place.holder, place.before, relink(place.before, place.from, place.to, targets)));
+  });
+  linkInput.addEventListener("input", () => linkBox.classList.remove(styles.linkInvalid));
+  linkInput.addEventListener("blur", closeLink);
+  action("doctor.link", "doctor: link", [KeyMod.CtrlCmd | KeyCode.KeyK], openLink);
+
+  // A line's kind, as far as joining blocks goes: text that holds a block's
+  // words, a blank between blocks, or code, which joins as plain lines do.
+  const lineKinds = (): Array<"text" | "blank" | "code"> => {
+    let code: "outside" | "inside" = "outside";
+    return model.getLinesContent().map((content) => {
+      const rest = content.slice((/^(?:>+ )?/.exec(content)?.[0] ?? "").length);
+      if (code === "inside") {
+        if (rest === "```") code = "outside";
+        return "code";
+      }
+      if (rest.startsWith("```")) {
+        code = "inside";
+        return "code";
+      }
+      return /^>*$/.test(content.trim()) ? "blank" : "text";
+    });
+  };
+
+  // Delete at the end of a block joins the next block's words onto it, past
+  // the blank between them and without the next block's marks.
+  const joinNext = () => {
+    const position = editor.getPosition();
+    if (position === null) return;
+    const kinds = lineKinds();
+    const line = position.lineNumber;
+    let next = line + 1;
+    while (next <= model.getLineCount() && kinds[next - 1] === "blank") next += 1;
+    if (next > model.getLineCount() || kinds[next - 1] !== "text") return;
+    const following = model.getLineContent(next);
+    const end = model.getLineMaxColumn(line);
+    editor.executeEdits(
+      "doctor",
+      [{ range: new monaco.Range(line, end, next, model.getLineMaxColumn(next)), text: following.slice(contentStart(following)) }],
+      [new monaco.Selection(line, end, line, end)],
+    );
+  };
+
+  // Backspace at the start of a block's words takes its mark away, a
+  // heading's or an item's, then a quote's level; a paragraph's words join
+  // onto the block before it. The title keeps its #0.
+  const joinPrevious = () => {
+    const position = editor.getPosition();
+    if (position === null || position.lineNumber === 1) return;
+    const line = position.lineNumber;
+    const content = model.getLineContent(line);
+    const start = contentStart(content);
+    const quote = /^(?:>+ )?/.exec(content)?.[0] ?? "";
+    const mark = /^(?:#\d+(?: |$)| *(?:-|\d+\.) )/.exec(content.slice(quote.length))?.[0] ?? "";
+    if (mark.length > 0) {
+      const escape = startsBlock(content.slice(start)) ? "\\" : "";
+      const column = quote.length + 1;
+      editor.executeEdits(
+        "doctor",
+        [{ range: new monaco.Range(line, column, line, start + 1), text: escape }],
+        [new monaco.Selection(line, column + escape.length, line, column + escape.length)],
+      );
+      return;
+    }
+    if (quote.length > 0) {
+      const marks = quote.trimEnd().length;
+      const fewer = marks > 1 ? `${">".repeat(marks - 1)} ` : "";
+      editor.executeEdits(
+        "doctor",
+        [{ range: new monaco.Range(line, 1, line, quote.length + 1), text: fewer }],
+        [new monaco.Selection(line, fewer.length + 1, line, fewer.length + 1)],
+      );
+      return;
+    }
+    const kinds = lineKinds();
+    let previous = line - 1;
+    while (previous >= 1 && kinds[previous - 1] === "blank") previous -= 1;
+    if (previous < 1 || kinds[previous - 1] !== "text") return;
+    const end = model.getLineMaxColumn(previous);
+    editor.executeEdits(
+      "doctor",
+      [{ range: new monaco.Range(previous, end, line, start + 1), text: "" }],
+      [new monaco.Selection(previous, end, previous, end)],
+    );
+  };
+
+  // the keys only do this with one caret, at a block's very end or start
+  const atBlockEnd = editor.createContextKey<boolean>("doctorBlockEnd", false);
+  const atBlockStart = editor.createContextKey<boolean>("doctorBlockStart", false);
+  const placeKeys = () => {
+    const selections = editor.getSelections() ?? [];
+    const [only] = selections;
+    if (only === undefined || selections.length > 1 || !only.isEmpty()) {
+      atBlockEnd.set(false);
+      atBlockStart.set(false);
+      return;
+    }
+    const content = model.getLineContent(only.startLineNumber);
+    const text = lineKinds()[only.startLineNumber - 1] === "text";
+    atBlockEnd.set(text && only.startColumn === content.length + 1);
+    atBlockStart.set(text && only.startColumn === contentStart(content) + 1);
+  };
+  editor.onDidChangeCursorSelection(placeKeys);
+  editor.addCommand(KeyCode.Delete, joinNext, "doctorBlockEnd");
+  editor.addCommand(KeyCode.Backspace, joinPrevious, "doctorBlockStart");
+
   // a numbered list's numbers, kept right as items come and go and move
   const renumber = () => {
     const edits: Array<monaco.editor.IIdentifiedSingleEditOperation> = [];
@@ -538,12 +716,45 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     applying = "idle";
   };
 
+  // a heading's #n, kept equal to its depth: a section whose parent goes
+  // moves up a level, and a level skipped is the next one down
+  const relevel = () => {
+    const edits: Array<monaco.editor.IIdentifiedSingleEditOperation> = [];
+    const open = new Map<string, Array<number>>();
+    let code: "outside" | "inside" = "outside";
+    model.getLinesContent().forEach((content, at) => {
+      const quote = /^(?:>+ )?/.exec(content)?.[0] ?? "";
+      const rest = content.slice(quote.length);
+      if (rest.startsWith("```")) code = code === "inside" ? "outside" : "inside";
+      if (code === "inside" || at === 0) return;
+      if (quote === "" && content.trim() !== "") {
+        for (const key of [...open.keys()]) if (key !== "") open.delete(key);
+      }
+      const heading = /^#(\d+)(?= |$)/.exec(rest);
+      const written = Number(heading?.[1] ?? 0);
+      if (heading === null || written === 0) return;
+      const levels = open.get(quote) ?? [];
+      while ((levels.at(-1) ?? 0) >= written) levels.pop();
+      const depth = levels.length + 1;
+      levels.push(written);
+      open.set(quote, levels);
+      if (depth === written) return;
+      const column = quote.length + 2;
+      edits.push({ range: new monaco.Range(at + 1, column, at + 1, column + (heading[1]?.length ?? 1)), text: String(depth) });
+    });
+    if (edits.length === 0) return;
+    applying = "applying";
+    model.pushEditOperations([], edits, () => null);
+    applying = "idle";
+  };
+
   model.onDidChangeContent(() => {
     if (applying === "applying" || queued === "queued") return;
     queued = "queued";
     queueMicrotask(() => {
       queued = "idle";
       renumber();
+      relevel();
       hooks.edited(model.getLinesContent(), ownersNow());
     });
   });
@@ -574,7 +785,52 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   };
   editor.addCommand(monaco.KeyCode.Tab, () => shift("in"), "doctorItem");
   editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Tab, () => shift("out"), "doctorItem");
-  editor.onDidChangeCursorPosition((event) => inItem.set(isItem(event.position.lineNumber)));
+
+  // Tab and Shift+Tab move a section a level deeper or shallower, its
+  // subsections with it; it goes deeper only under a section before it at
+  // its own level, and no shallower than #1
+  const inHeading = editor.createContextKey<boolean>("doctorHeading", false);
+  const quoteOf = (content: string) => /^(?:>+ )?/.exec(content)?.[0] ?? "";
+  const headingIn = (content: string) => /^#(\d+)(?= |$)/.exec(content.slice(quoteOf(content).length));
+  const isHeading = (line: number) =>
+    line > 1 && lineKinds()[line - 1] === "text" && headingIn(model.getLineContent(line)) !== null;
+  const shiftSection = (direction: "in" | "out") => {
+    const position = editor.getPosition();
+    if (position === null || !isHeading(position.lineNumber)) return;
+    const kinds = lineKinds();
+    const quote = quoteOf(model.getLineContent(position.lineNumber));
+    const headings = model.getLinesContent().flatMap((content, at) => {
+      const match = at > 0 && kinds[at] === "text" && quoteOf(content) === quote ? headingIn(content) : null;
+      if (match === null) return [];
+      const digits = match[1] ?? "1";
+      return [{ line: at + 1, level: Number(digits), digits: digits.length }];
+    });
+    const index = headings.findIndex((heading) => heading.line === position.lineNumber);
+    const self = headings[index];
+    if (self === undefined) return;
+    const next = headings.findIndex((heading, at) => at > index && heading.level <= self.level);
+    const section = headings.slice(index, next === -1 ? headings.length : next);
+    if (direction === "out" && self.level <= 1) return;
+    if (direction === "in") {
+      const before = headings.slice(0, index).findLast((heading) => heading.level <= self.level);
+      if (before?.level !== self.level) return;
+    }
+    const step = direction === "in" ? 1 : -1;
+    const column = quote.length + 2;
+    editor.executeEdits(
+      "doctor",
+      section.map((heading) => ({
+        range: new monaco.Range(heading.line, column, heading.line, column + heading.digits),
+        text: String(heading.level + step),
+      })),
+    );
+  };
+  editor.addCommand(monaco.KeyCode.Tab, () => shiftSection("in"), "doctorHeading");
+  editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Tab, () => shiftSection("out"), "doctorHeading");
+  editor.onDidChangeCursorPosition((event) => {
+    inItem.set(isItem(event.position.lineNumber));
+    inHeading.set(isHeading(event.position.lineNumber));
+  });
   editor.onDidBlurEditorText(() => hooks.leave());
   editor.onDidChangeCursorSelection(() => {
     for (const document of documents) decorate(document);

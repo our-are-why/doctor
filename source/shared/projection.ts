@@ -47,7 +47,7 @@ export interface _Reader_Projection_ {
 }
 
 // a paragraph whose words would read as a mark starts with a backslash
-const startsBlock = (content: string) => /^(?:[#`>\\]| *(?:-|\d+\.) )/.test(content);
+export const startsBlock = (content: string) => /^(?:[#`>\\]| *(?:-|\d+\.) )/.test(content);
 
 export function project(document: _Document_Doctor_): _Projection_ {
   const lines: Array<string> = [];

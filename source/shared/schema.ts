@@ -87,7 +87,7 @@ const contrastSchema: v.GenericSchema<unknown, _Contrast_Mark_> = v.picklist([
   "struck",
 ]);
 
-const urlSchema: v.GenericSchema<unknown, _Url_Target_> = v.custom<_Url_Target_>(
+export const urlSchema: v.GenericSchema<unknown, _Url_Target_> = v.custom<_Url_Target_>(
   (input) => typeof input === "string" && /^https?:\/\/\S+$/.test(input),
   "a link URL starts with http:// or https://",
 );
