@@ -21,7 +21,7 @@ import type { _Open_Proposal_, _Verdict_Review_ } from "../shared/protocol.ts";
 import { nodeIdSchema } from "../shared/schema.ts";
 import { readTarget, writeTarget } from "../shared/target.ts";
 import { lengthOf, relink, segmentsOf, toggleContrast, type _Segment_Text_ } from "../shared/text.ts";
-import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
+import { indexNodes, nodesWithin, textOfNode, type _Index_Document_ } from "../shared/tree.ts";
 import * as monaco from "./monaco.ts";
 import "./styles/monaco.css";
 import styles from "./styles/TextEditor.module.css";
@@ -31,7 +31,7 @@ export interface _Hooks_View_ {
   edited: (lines: Array<string>, owners: Array<Array<_Id_Node_>>) => void;
   perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>) => void;
   leave: () => void;
-  makeTask: (scope: Array<_Id_Node_>) => void;
+  makeTask: (scope: Array<_Id_Node_>, instruction: string) => void;
   review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
 }
 
@@ -930,26 +930,129 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   editor.addCommand(KeyCode.Delete, joinNext, "doctorBlockEnd");
   editor.addCommand(KeyCode.Backspace, joinPrevious, "doctorBlockStart");
 
-  // a task about the blocks the selection touches; a code block's lines are
-  // its block's
+  // a selection's last line, leaving out one it only reaches the start of
+  const lastLineOf = (selection: monaco.Selection) =>
+    selection.endColumn === 1 && selection.endLineNumber > selection.startLineNumber
+      ? selection.endLineNumber - 1
+      : selection.endLineNumber;
+
+  // A task about the blocks the selection touches, each once: a code
+  // block's lines are its block's, and a block inside another in the scope
+  // goes with it.
   const scopeOfSelection = (): Array<_Id_Node_> => {
+    const [document] = documents;
     const owners = ownersNow();
     const kinds = lineKinds();
     const found = new Set<_Id_Node_>();
     for (const selection of editor.getSelections() ?? []) {
-      for (let line = selection.startLineNumber; line <= selection.endLineNumber; line += 1) {
+      for (let line = selection.startLineNumber; line <= lastLineOf(selection); line += 1) {
         let at = line;
         while (at > 1 && kinds[at - 1] === "code" && (owners[at - 1] ?? []).length === 0) at -= 1;
         for (const id of owners[at - 1] ?? []) found.add(id);
       }
     }
-    return [...found];
+    const index: _Index_Document_ = document === undefined ? new Map() : indexNodes(document.content);
+    const inside = (id: _Id_Node_): boolean => {
+      const parent = index.get(id)?.parent;
+      return parent?.kind === "node" && (found.has(parent.node) || inside(parent.node));
+    };
+    return [...found].filter((id) => !inside(id));
   };
+
+  // where the pointer last was over the editor, down from its top
+  let pointer: Array<number> = [];
+  editor.onMouseMove((event) => {
+    const box = editor.getDomNode()?.getBoundingClientRect();
+    pointer = box === undefined ? [] : [event.event.browserEvent.clientY - box.top];
+  });
+
+  // A new task's form, beside the selection: above it when the pointer's
+  // nearer its top, below it otherwise. What's typed stays if it's closed
+  // without making the task.
+  const taskBox = document.createElement("div");
+  taskBox.className = styles.taskBox;
+  const taskInput = document.createElement("textarea");
+  taskInput.className = styles.taskInput;
+  taskInput.rows = 2;
+  const taskHint = document.createElement("span");
+  taskHint.className = styles.taskHint;
+  const makeButton = document.createElement("button");
+  makeButton.className = styles.proposalAccept;
+  makeButton.textContent = "Make task";
+  const cancelButton = document.createElement("button");
+  cancelButton.className = styles.proposalButton;
+  cancelButton.textContent = "Cancel";
+  const taskRow = document.createElement("div");
+  taskRow.className = styles.taskRow;
+  taskRow.append(taskHint, cancelButton, makeButton);
+  taskBox.append(taskInput, taskRow);
+  let tasking: Array<{ scope: Array<_Id_Node_>; at: monaco.IPosition; above: "above" | "below" }> = [];
+  const { ABOVE, BELOW } = monaco.editor.ContentWidgetPositionPreference;
+  const taskWidget: monaco.editor.IContentWidget = {
+    getId: () => "doctor.task",
+    getDomNode: () => taskBox,
+    getPosition: () => {
+      const [place] = tasking;
+      return place === undefined ? null : { position: place.at, preference: place.above === "above" ? [ABOVE, BELOW] : [BELOW, ABOVE] };
+    },
+  };
+  const closeTask = () => {
+    if (tasking.length === 0) return;
+    tasking = [];
+    editor.removeContentWidget(taskWidget);
+    editor.focus();
+  };
+  const openTask = () => {
+    const selection = editor.getSelection();
+    if (selection === null) return;
+    const scope = scopeOfSelection();
+    const first = selection.startLineNumber;
+    const last = lastLineOf(selection);
+    const top = editor.getScrolledVisiblePosition({ lineNumber: first, column: 1 });
+    const bottom = editor.getScrolledVisiblePosition({ lineNumber: last, column: 1 });
+    const [y] = pointer;
+    const nearerTop =
+      y !== undefined && top !== null && bottom !== null && Math.abs(y - top.top) < Math.abs(y - (bottom.top + bottom.height));
+    tasking = [{ scope, at: { lineNumber: nearerTop ? first : last, column: 1 }, above: nearerTop ? "above" : "below" }];
+    const blocks = scope.length === 1 ? "the selected block" : `the ${scope.length} selected blocks`;
+    taskHint.textContent = `for ${scope.length === 0 ? "the whole document" : blocks} · Enter makes it, Shift+Enter a new line`;
+    taskInput.placeholder = "What should the agent do?";
+    taskBox.classList.remove(styles.taskInvalid);
+    editor.addContentWidget(taskWidget);
+    taskInput.focus();
+  };
+  const makeTask = () => {
+    const [place] = tasking;
+    const written = taskInput.value.trim();
+    if (place === undefined) return;
+    if (written === "") {
+      taskBox.classList.add(styles.taskInvalid);
+      taskInput.focus();
+      return;
+    }
+    hooks.makeTask(place.scope, written);
+    taskInput.value = "";
+    closeTask();
+  };
+  taskInput.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Escape") closeTask();
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    makeTask();
+  });
+  taskInput.addEventListener("input", () => taskBox.classList.remove(styles.taskInvalid));
+  makeButton.addEventListener("click", makeTask);
+  cancelButton.addEventListener("click", closeTask);
+  // closed when the focus leaves it, not when it moves to one of its buttons
+  taskBox.addEventListener("focusout", (event) => {
+    if (!(event.relatedTarget instanceof Node && taskBox.contains(event.relatedTarget))) closeTask();
+  });
   editor.addAction({
     id: "doctor.task",
     label: "doctor: new task",
     contextMenuGroupId: "0_doctor",
-    run: () => hooks.makeTask(scopeOfSelection()),
+    run: openTask,
   });
 
   // a numbered list's numbers, kept right as items come and go and move

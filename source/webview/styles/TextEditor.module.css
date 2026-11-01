@@ -154,6 +154,52 @@
   border-color: var(--vscode-inputValidation-errorBorder);
 }
 
+/* the form that makes a task about the selection */
+
+.taskBox {
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border, transparent);
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  gap: 4px;
+  padding: 6px;
+  width: min(36em, 80vw);
+}
+
+.taskInput {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  box-sizing: border-box;
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  outline: none;
+  padding: 4px 6px;
+  resize: vertical;
+  width: 100%;
+}
+
+.taskInput:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.taskInvalid .taskInput {
+  border-color: var(--vscode-inputValidation-errorBorder);
+}
+
+.taskRow {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.taskHint {
+  color: var(--vscode-descriptionForeground);
+  flex: 1;
+  font-size: 0.9em;
+}
+
 /* proposals: what they'd take away struck through, what they'd add beneath,
    in the diff editor's colours */
 

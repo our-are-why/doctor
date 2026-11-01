@@ -46,7 +46,7 @@ export interface _Session_Webview_ {
   // the proposals waiting for review on this file, and what's wrong with any
   open: Array<_Open_Proposal_>;
   openProblems: Array<string>;
-  makeTask: (scope: Array<_Id_Node_>) => void;
+  makeTask: (scope: Array<_Id_Node_>, instruction: string) => void;
   review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
 }
 
@@ -154,7 +154,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     setDue("due");
   };
 
-  const makeTask = (scope: Array<_Id_Node_>) => send({ kind: "task", file, scope });
+  const makeTask = (scope: Array<_Id_Node_>, instruction: string) => send({ kind: "task", file, scope, instruction });
   const review = (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) =>
     send({ kind: "review", task, proposal, verdict });
 

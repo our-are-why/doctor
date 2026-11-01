@@ -147,16 +147,10 @@ async function makeTask(message: _TASK_Message__Client_, send: _Send_Session_): 
   const [place] = tasksPlace();
   const read = await readDocument(message.file);
   if (place === undefined || read.kind === "rejected") return;
-  const instruction = await vscode.window.showInputBox({
-    title: "doctor: new task",
-    prompt: message.scope.length > 0 ? "What should the agent do with the selected blocks?" : "What should the agent do with this document?",
-    ignoreFocusOut: true,
-  });
-  if (instruction === undefined || instruction.trim() === "") return;
   const nodes = message.scope.length > 0 ? message.scope : read.value.content.children.map((block) => block.id);
   await createTask(
     place,
-    { text: instruction.trim(), overlay: [] },
+    { text: message.instruction, overlay: [] },
     nodes.map((node) => ({ document: read.value.id, node })),
   );
   await announce([], [send]);

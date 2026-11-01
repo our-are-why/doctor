@@ -62,10 +62,11 @@ export interface _CHANGE_Message__Client_ extends __BASE_Message__Client_<"chang
   operations: _NonEmpty_<_Operation_Change_>;
 }
 
-// a task to make, about these nodes of the file
+// a task to make, about these nodes of the file, with what's to be done
 export interface _TASK_Message__Client_ extends __BASE_Message__Client_<"task"> {
   file: string;
   scope: Array<_Id_Node_>;
+  instruction: string;
 }
 
 export interface _REVIEW_Message__Client_ extends __BASE_Message__Client_<"review"> {
@@ -118,7 +119,12 @@ const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kin
 ]);
 
 export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v.variant("kind", [
-  v.strictObject({ kind: v.literal("task"), file: v.string(), scope: v.array(nodeIdSchema) }),
+  v.strictObject({
+    kind: v.literal("task"),
+    file: v.string(),
+    scope: v.array(nodeIdSchema),
+    instruction: v.pipe(v.string(), v.trim(), v.minLength(1, "a task needs an instruction")),
+  }),
   v.strictObject({ kind: v.literal("review"), task: taskIdSchema, proposal: proposalIdSchema, verdict: verdictSchema }),
   v.strictObject({ kind: v.literal("watch") }),
   v.strictObject({ kind: v.literal("activate"), task: taskIdSchema }),

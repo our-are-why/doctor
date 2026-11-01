@@ -36,7 +36,7 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
       },
       perform: (act) => latest.current.perform(act, "now"),
       leave: () => latest.current.leave(),
-      makeTask: (scope) => latest.current.makeTask(scope),
+      makeTask: (scope, instruction) => latest.current.makeTask(scope, instruction),
       review: (task, proposal, verdict) => latest.current.review(task, proposal, verdict),
     });
     views.current = [view];
