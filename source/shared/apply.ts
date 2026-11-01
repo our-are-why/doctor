@@ -220,10 +220,10 @@ function withHolderText(body: _Body_Document_, holder: _Holder_Text_, text: _Tex
   return mapBody(body, holder.node, (node) => withText(node, text));
 }
 
-function carryNotes(notes: Array<_Note_Document_>, node: _Id_Node_, change: _Difference_Text_): Array<_Note_Document_> {
-  return notes.map((note) =>
-    note.kind === "passage" && note.node === node ? { ...note, range: carryRange(note.range, change) } : note,
-  );
+function carryNotes(notes: Array<_Note_Document_>, node: _Id_Node_, changes: Array<_Difference_Text_>): Array<_Note_Document_> {
+  const carry = (range: _PASSAGE_Note__Document_["range"]) =>
+    changes.toReversed().reduce((each, change) => carryRange(each, change), range);
+  return notes.map((note) => (note.kind === "passage" && note.node === node ? { ...note, range: carry(note.range) } : note));
 }
 
 function applyOperation(state: _State_Apply_, operation: _Operation_Change_): _Step_Apply_<_State_Apply_> {
@@ -239,7 +239,7 @@ function applyOperation(state: _State_Apply_, operation: _Operation_Change_): _S
       const next = withHolderText(body, operation.holder, written.text);
       if (next.kind !== "done") return next;
       const notes =
-        operation.holder.kind === "node" ? carryNotes(state.notes, operation.holder.node, written.change) : state.notes;
+        operation.holder.kind === "node" ? carryNotes(state.notes, operation.holder.node, written.changes) : state.notes;
       return done({ body: next.value, notes });
     }
     case "style": {

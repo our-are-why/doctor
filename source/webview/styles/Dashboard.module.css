@@ -1,0 +1,48 @@
+.tasks {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.task,
+.active {
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  padding: 0.5rem 0;
+}
+
+.active {
+  box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+  padding-left: 0.6rem;
+}
+
+.line {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+}
+
+.state {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  min-width: 5.5em;
+}
+
+.instruction {
+  flex: 1;
+}
+
+.button {
+  background: var(--vscode-button-secondaryBackground);
+  border: none;
+  border-radius: 2px;
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.15rem 0.6rem;
+}
+
+.detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  margin: 0.2rem 0 0;
+}

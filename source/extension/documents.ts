@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { _Document_Doctor_ } from "../shared/domain.next.ts";
 import { mintId } from "../shared/id.ts";
@@ -35,17 +35,20 @@ export async function readDocument(file: string): Promise<_Result_Parse_<_Docume
   return parse(documentSchema, raw);
 }
 
-// to a temporary file renamed into place, so nothing ever reads half a document
-export async function writeDocument(file: string, document: _Document_Doctor_): Promise<void> {
+// to a temporary file renamed into place, so nothing ever reads half of it
+export async function writeJson(file: string, value: unknown): Promise<void> {
   const temporary = join(dirname(file), `.${basename(file)}.${randomBytes(4).toString("hex")}.tmp`);
   try {
-    await writeFile(temporary, `${printJson(document)}\n`);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(temporary, `${printJson(value)}\n`);
     await rename(temporary, file);
   } catch (someError) {
     await rm(temporary, { force: true });
     throw someError;
   }
 }
+
+export const writeDocument = (file: string, document: _Document_Doctor_) => writeJson(file, document);
 
 const queues = new Map<string, Promise<void>>();
 

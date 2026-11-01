@@ -152,42 +152,82 @@
   border-color: var(--vscode-inputValidation-errorBorder);
 }
 
-/* the stand-in proposal */
+/* proposals: what they'd take away struck through, what they'd add beneath,
+   in the diff editor's colours */
 
-.removed {
-  background: var(--vscode-diffEditor-removedTextBackground);
+:global(.monaco-editor) .removedLine {
+  background: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
+}
+
+:global(.monaco-editor) .removed {
   text-decoration: line-through;
 }
 
-.proposal {
-  background: var(--vscode-diffEditor-insertedLineBackground);
-  border-left: 3px solid var(--vscode-gitDecoration-addedResourceForeground);
+.proposalAdded {
+  background: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground));
+  border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground, currentColor);
   box-sizing: border-box;
-  font-family: var(--vscode-font-family);
-  padding: 0.3rem 0.6rem;
+  color: var(--vscode-editor-foreground);
+  font-family: var(--vscode-editor-font-family, monospace), monospace;
+  font-size: var(--vscode-editor-font-size);
+  padding-left: 6px;
 }
 
-.added {
-  font-family: var(--vscode-editor-font-family);
-  margin-bottom: 0.3rem;
+.proposalLine {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
 }
 
-.actions {
+.proposalHeader {
+  align-items: center;
+  background: var(--vscode-editor-background);
+  border-top: 1px solid color-mix(in srgb, var(--vscode-editor-foreground) 15%, transparent);
+  box-sizing: border-box;
+  color: var(--vscode-descriptionForeground);
   display: flex;
+  font-family: var(--vscode-font-family);
+  font-size: 0.9em;
   gap: 0.4rem;
+  padding: 0 6px;
 }
 
-.actions button {
-  background: var(--vscode-button-background);
+.proposalTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proposalAccept,
+.proposalButton {
   border: none;
   border-radius: 2px;
-  color: var(--vscode-button-foreground);
   cursor: pointer;
   font: inherit;
-  padding: 0.1rem 0.6rem;
+  padding: 0.15rem 0.6rem;
 }
 
-.actions button + button {
+.proposalAccept {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.proposalButton {
   background: var(--vscode-button-secondaryBackground);
   color: var(--vscode-button-secondaryForeground);
+}
+
+.proposalInput {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  outline: none;
+  padding: 0.15rem 0.4rem;
+  width: 14em;
+}
+
+.proposalInput:focus {
+  border-color: var(--vscode-focusBorder);
 }

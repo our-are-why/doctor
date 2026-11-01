@@ -90,6 +90,14 @@ function objectsOf(document: _Document_Doctor_): _Objects_Version_ {
 
 export const versionOf = (document: _Document_Doctor_) => objectsOf(document).version;
 
+// a node and everything in it, spelled one way, so two are the same exactly
+// when their keys are
+export function nodeKey(node: _Node_Document_): string {
+  return canonicalJson({ id: node.id, content: contentOf(node), children: childrenOf(node).map(nodeKey) });
+}
+
+export const textKey = (text: _Text_Doctor_) => canonicalJson(orderedText(text));
+
 const objectFile = (data: string, hash: string) =>
   join(data, "objects", hash.slice(0, 2), `${hash.slice(2)}.json`);
 

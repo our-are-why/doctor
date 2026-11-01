@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { _Document_Doctor_, _Operation_Change_ } from "../shared/domain.next.ts";
+import type { _Document_Doctor_, _Id_Node_, _Id_Proposal_, _Id_Task_, _Operation_Change_ } from "../shared/domain.next.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
-import type { _Token_Endpoint_, _Url_Endpoint_ } from "../shared/protocol.ts";
+import type { _Open_Proposal_, _Token_Endpoint_, _Url_Endpoint_, _Verdict_Review_ } from "../shared/protocol.ts";
 import {
   confirmed,
   opened,
@@ -43,6 +43,11 @@ export interface _Session_Webview_ {
   arrivals: number;
   perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>, urgency: _Urgency_Session_) => void;
   leave: () => void;
+  // the proposals waiting for review on this file, and what's wrong with any
+  open: Array<_Open_Proposal_>;
+  openProblems: Array<string>;
+  makeTask: (scope: Array<_Id_Node_>) => void;
+  review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
 }
 
 type _Due_Editor_ = "waiting" | "due";
@@ -63,6 +68,8 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const [problems, setProblems] = useState<Array<string>>([]);
   const [due, setDue] = useState<_Due_Editor_>("waiting");
   const [arrivals, setArrivals] = useState(0);
+  const [open, setOpen] = useState<Array<_Open_Proposal_>>([]);
+  const [openProblems, setOpenProblems] = useState<Array<string>>([]);
   const timer = useRef(0);
 
   // what the handlers read, kept current as soon as it changes rather than
@@ -84,7 +91,12 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   };
 
   const { connection, send } = useSocket(endpoint, token, (message) => {
-    if (message.kind === "welcome" || message.file !== file) return;
+    if (message.kind === "welcome" || message.kind === "tasks" || message.file !== file) return;
+    if (message.kind === "proposals") {
+      setOpen(message.open);
+      setOpenProblems(message.problems);
+      return;
+    }
     const current = loadRef.current;
     switch (message.kind) {
       case "opened":
@@ -142,5 +154,9 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     setDue("due");
   };
 
-  return { load, problems, connection, arrivals, perform, leave };
+  const makeTask = (scope: Array<_Id_Node_>) => send({ kind: "task", file, scope });
+  const review = (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) =>
+    send({ kind: "review", task, proposal, verdict });
+
+  return { load, problems, connection, arrivals, perform, leave, open, openProblems, makeTask, review };
 }

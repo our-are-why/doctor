@@ -6,8 +6,10 @@ import type {
   _Content_Node_,
   _Contrast_Mark_,
   _Document_Doctor_,
+  _DRAFT_Id__Node_,
   _EDITABLE_Content__Node_,
   _Entry_History_,
+  _FINAL_Proposal__Task_,
   _Former_Note_,
   _Hash_Node_,
   _Holder_Text_,
@@ -22,23 +24,35 @@ import type {
   _Mark_Text_,
   _Node_Document_,
   _Note_Document_,
+  _Number_Brief_,
   _Object_Store_,
   _Offset_Text_,
   _Operation_Change_,
   _Parent_Position_,
   _Position_Operation_,
+  _Proposal_Task_,
   _Range_Text_,
+  _Reason_Task_,
   _Ref_Change_,
+  _Ref_Node_,
+  _REQUESTED_Round__Proposal_,
+  _Review_Change_,
+  _Round_Proposal_,
   _Source_Change_,
   _Stamp_Doctor_,
+  _STANDING_Round__Proposal_,
   _Target_Link_,
+  _Task_Doctor_,
   _Text_Doctor_,
   _Time_Doctor_,
   _Url_Target_,
+  _Version_Brief_,
   _Version_Document_,
+  _Version_Proposal_,
   _Words_Former_,
 } from "./domain.next.ts";
 import { documentIssues } from "./invariants.ts";
+import { parse } from "./parse.ts";
 
 // ids are ten random characters from [0-9a-z]
 const idPattern = /^[0-9a-z]{10}$/;
@@ -117,41 +131,60 @@ const languageSchema: v.GenericSchema<unknown, _Language_Code_> = v.variant("kin
 
 const orderSchema = v.picklist(["ordered", "unordered"]);
 
-export const blockSchema: v.GenericSchema<unknown, _Block_Document_> = v.lazy(() =>
-  v.variant("kind", [
-    v.strictObject({
-      kind: v.literal("section"),
-      id: nodeIdSchema,
-      heading: textSchema,
-      children: v.array(blockSchema),
-    }),
-    v.strictObject({ kind: v.literal("paragraph"), id: nodeIdSchema, text: v.string(), overlay: overlaySchema }),
-    v.strictObject({
-      kind: v.literal("list"),
-      id: nodeIdSchema,
-      order: orderSchema,
-      children: v.tupleWithRest([listItemSchema], listItemSchema),
-    }),
-    v.strictObject({ kind: v.literal("code"), id: nodeIdSchema, language: languageSchema, code: v.string() }),
-    v.strictObject({
-      kind: v.literal("quote"),
-      id: nodeIdSchema,
-      children: v.tupleWithRest([blockSchema], blockSchema),
-    }),
-  ]),
-);
+interface _Schemas_Node_<__Id__> {
+  block: v.GenericSchema<unknown, _Block_Document_<__Id__>>;
+  item: v.GenericSchema<unknown, _ListItem_Document_<__Id__>>;
+  node: v.GenericSchema<unknown, _Node_Document_<__Id__>>;
+}
 
-export const listItemSchema: v.GenericSchema<unknown, _ListItem_Document_> = v.lazy(() =>
-  v.strictObject({
+// Nodes whose ids are what idSchema reads: a document's, or the new ones a
+// proposal makes. Each kind's schema is shared by blocks and nodes, so a
+// node that doesn't fit is reported by what's wrong in its kind.
+function nodeSchemas<__Id__>(idSchema: v.GenericSchema<unknown, __Id__>): _Schemas_Node_<__Id__> {
+  const blocks = v.lazy(() => block);
+  const items = v.lazy(() => item);
+  const section = v.strictObject({ kind: v.literal("section"), id: idSchema, heading: textSchema, children: v.array(blocks) });
+  const paragraph = v.strictObject({ kind: v.literal("paragraph"), id: idSchema, text: v.string(), overlay: overlaySchema });
+  const list = v.strictObject({
+    kind: v.literal("list"),
+    id: idSchema,
+    order: orderSchema,
+    children: v.tupleWithRest([items], items),
+  });
+  const code = v.strictObject({ kind: v.literal("code"), id: idSchema, language: languageSchema, code: v.string() });
+  const quote = v.strictObject({ kind: v.literal("quote"), id: idSchema, children: v.tupleWithRest([blocks], blocks) });
+  const listItem = v.strictObject({
     kind: v.literal("listItem"),
-    id: nodeIdSchema,
+    id: idSchema,
     text: v.string(),
     overlay: overlaySchema,
-    children: v.array(blockSchema),
-  }),
+    children: v.array(blocks),
+  });
+  const item: v.GenericSchema<unknown, _ListItem_Document_<__Id__>> = listItem;
+  const block: v.GenericSchema<unknown, _Block_Document_<__Id__>> = v.variant("kind", [section, paragraph, list, code, quote]);
+  const node: v.GenericSchema<unknown, _Node_Document_<__Id__>> = v.variant("kind", [
+    section,
+    paragraph,
+    list,
+    code,
+    quote,
+    listItem,
+  ]);
+  return { block, item, node };
+}
+
+const documentNodes = nodeSchemas(nodeIdSchema);
+export const blockSchema = documentNodes.block;
+export const listItemSchema = documentNodes.item;
+
+// a node a proposal makes is named new-something until it's accepted, which
+// no document id can be
+export const draftIdSchema: v.GenericSchema<unknown, _DRAFT_Id__Node_> = v.custom<_DRAFT_Id__Node_>(
+  (input) => typeof input === "string" && /^new-[0-9a-z-]+$/.test(input),
+  "a new node's id is new- and then letters, digits or dashes",
 );
 
-const nodeSchema: v.GenericSchema<unknown, _Node_Document_> = v.union([blockSchema, listItemSchema]);
+const draftNodes = nodeSchemas(draftIdSchema);
 
 export const bodySchema: v.GenericSchema<unknown, _Body_Document_> = v.strictObject({
   title: textSchema,
@@ -230,26 +263,36 @@ const editableSchema: v.GenericSchema<unknown, _EDITABLE_Content__Node_> = v.var
   v.strictObject({ kind: v.literal("code"), language: languageSchema, code: v.string() }),
 ]);
 
-const parentSchema: v.GenericSchema<unknown, _Parent_Position_> = v.variant("kind", [
-  v.strictObject({ kind: v.literal("body") }),
-  v.strictObject({ kind: v.literal("node"), node: nodeIdSchema }),
-]);
+// operations whose new nodes have ids newSchema reads, as do the parents
+// and siblings they can be placed by
+function operationSchemaFor<__New__>(
+  newSchema: v.GenericSchema<unknown, __New__>,
+  subtreeSchema: v.GenericSchema<unknown, _Node_Document_<__New__>>,
+): v.GenericSchema<unknown, _Operation_Change_<__New__>> {
+  const placedBy = v.union([nodeIdSchema, newSchema]);
+  const parentSchema: v.GenericSchema<unknown, _Parent_Position_<__New__>> = v.variant("kind", [
+    v.strictObject({ kind: v.literal("body") }),
+    v.strictObject({ kind: v.literal("node"), node: placedBy }),
+  ]);
+  const positionSchema: v.GenericSchema<unknown, _Position_Operation_<__New__>> = v.variant("kind", [
+    v.strictObject({ kind: v.literal("first"), parent: parentSchema }),
+    v.strictObject({ kind: v.literal("after"), parent: parentSchema, sibling: placedBy }),
+  ]);
+  return v.variant("kind", [
+    v.strictObject({ kind: v.literal("write"), holder: holderSchema, text: v.string() }),
+    v.strictObject({ kind: v.literal("style"), holder: holderSchema, overlay: overlaySchema }),
+    v.strictObject({ kind: v.literal("edit"), node: nodeIdSchema, content: editableSchema }),
+    v.strictObject({ kind: v.literal("insert"), at: positionSchema, subtree: subtreeSchema }),
+    v.strictObject({ kind: v.literal("delete"), node: nodeIdSchema }),
+    v.strictObject({ kind: v.literal("move"), node: nodeIdSchema, to: positionSchema }),
+  ]);
+}
 
-const positionSchema: v.GenericSchema<unknown, _Position_Operation_> = v.variant("kind", [
-  v.strictObject({ kind: v.literal("first"), parent: parentSchema }),
-  v.strictObject({ kind: v.literal("after"), parent: parentSchema, sibling: nodeIdSchema }),
-]);
-
-export const operationSchema: v.GenericSchema<unknown, _Operation_Change_> = v.variant("kind", [
-  v.strictObject({ kind: v.literal("write"), holder: holderSchema, text: v.string() }),
-  v.strictObject({ kind: v.literal("style"), holder: holderSchema, overlay: overlaySchema }),
-  v.strictObject({ kind: v.literal("edit"), node: nodeIdSchema, content: editableSchema }),
-  v.strictObject({ kind: v.literal("insert"), at: positionSchema, subtree: nodeSchema }),
-  v.strictObject({ kind: v.literal("delete"), node: nodeIdSchema }),
-  v.strictObject({ kind: v.literal("move"), node: nodeIdSchema, to: positionSchema }),
-]);
-
+export const operationSchema = operationSchemaFor(nodeIdSchema, documentNodes.node);
 export const operationsSchema = v.tupleWithRest([operationSchema], operationSchema);
+
+export const proposalOperationSchema = operationSchemaFor(draftIdSchema, draftNodes.node);
+export const proposalOperationsSchema = v.tupleWithRest([proposalOperationSchema], proposalOperationSchema);
 
 // the store and the history
 
@@ -300,5 +343,151 @@ export const historyEntrySchema: v.GenericSchema<unknown, _Entry_History_> = v.v
     parent: versionSchema,
     source: sourceSchema,
     operations: operationsSchema,
+  }),
+]);
+
+// tasks and their proposals
+
+export const numberBriefSchema: v.GenericSchema<unknown, _Number_Brief_> = v.custom<_Number_Brief_>(
+  (input) => typeof input === "number" && Number.isInteger(input) && input >= 1,
+  "a brief's number is a whole number from 1",
+);
+
+export const refNodeSchema: v.GenericSchema<unknown, _Ref_Node_> = v.strictObject({
+  document: documentIdSchema,
+  node: nodeIdSchema,
+});
+
+const reasonSchema: v.GenericSchema<unknown, _Reason_Task_> = v.variant("kind", [
+  v.strictObject({ kind: v.literal("stated"), text: textSchema }),
+  v.strictObject({ kind: v.literal("unstated") }),
+]);
+
+const partySchema = v.picklist(["human", "agent", "anybody"]);
+
+const briefVersionSchema: v.GenericSchema<unknown, _Version_Brief_> = v.strictObject({
+  number: numberBriefSchema,
+  written: stampSchema,
+  instruction: textSchema,
+  scope: v.array(refNodeSchema),
+});
+
+const proposalVersionSchema: v.GenericSchema<unknown, _Version_Proposal_> = v.strictObject({
+  written: stampSchema,
+  base: versionSchema,
+  answering: numberBriefSchema,
+  operations: proposalOperationsSchema,
+});
+
+const standingSchema: v.GenericSchema<unknown, _STANDING_Round__Proposal_> = v.strictObject({
+  kind: v.literal("standing"),
+  version: proposalVersionSchema,
+});
+
+const requestedSchema: v.GenericSchema<unknown, _REQUESTED_Round__Proposal_> = v.strictObject({
+  kind: v.literal("requested"),
+  version: proposalVersionSchema,
+  request: v.strictObject({ made: stampSchema, feedback: textSchema }),
+});
+
+const roundSchema: v.GenericSchema<unknown, _Round_Proposal_> = v.union([standingSchema, requestedSchema]);
+
+// every round but the last got a request for changes; what the last may be
+// depends on the proposal's state
+function roundsSchema<__Last__ extends _Round_Proposal_>(
+  lastSchema: v.GenericSchema<unknown, __Last__>,
+): v.GenericSchema<unknown, [...Array<_REQUESTED_Round__Proposal_>, __Last__]> {
+  return v.custom<[...Array<_REQUESTED_Round__Proposal_>, __Last__]>(
+    (input) =>
+      Array.isArray(input) &&
+      input.length > 0 &&
+      input.slice(0, -1).every((round) => parse(requestedSchema, round).kind === "parsed") &&
+      parse(lastSchema, input.at(-1)).kind === "parsed",
+    "a proposal's rounds are its earlier requested ones, then its last",
+  );
+}
+
+const proposalBase = { id: proposalIdSchema, document: documentIdSchema };
+
+const accepted = v.strictObject({
+  state: v.literal("accepted"),
+  ...proposalBase,
+  rounds: roundsSchema(standingSchema),
+  accepted: stampSchema,
+  change: changeRefSchema,
+});
+
+const rejected = v.strictObject({
+  state: v.literal("rejected"),
+  ...proposalBase,
+  rounds: roundsSchema(standingSchema),
+  rejected: stampSchema,
+  reason: reasonSchema,
+});
+
+const withdrawn = v.strictObject({
+  state: v.literal("withdrawn"),
+  ...proposalBase,
+  rounds: roundsSchema(roundSchema),
+  withdrawn: stampSchema,
+  reason: reasonSchema,
+});
+
+const finalProposalSchema: v.GenericSchema<unknown, _FINAL_Proposal__Task_> = v.variant("state", [accepted, rejected, withdrawn]);
+
+export const proposalSchema: v.GenericSchema<unknown, _Proposal_Task_> = v.variant("state", [
+  v.strictObject({ state: v.literal("proposed"), ...proposalBase, rounds: roundsSchema(standingSchema) }),
+  v.strictObject({ state: v.literal("revising"), ...proposalBase, rounds: roundsSchema(requestedSchema) }),
+  accepted,
+  rejected,
+  withdrawn,
+]);
+
+const reviewSchema: v.GenericSchema<unknown, _Review_Change_> = v.strictObject({
+  change: changeRefSchema,
+  reviewed: stampSchema,
+});
+
+const taskBase = {
+  kind: v.literal("task"),
+  formatVersion: v.literal(1),
+  id: taskIdSchema,
+  created: stampSchema,
+  roles: v.strictObject({ worker: partySchema, reviewer: partySchema }),
+  reviewTiming: v.picklist(["before", "after"]),
+  brief: v.strictObject({ versions: v.tupleWithRest([briefVersionSchema], briefVersionSchema) }),
+};
+
+const activated = {
+  activated: stampSchema,
+  applied: v.array(changeRefSchema),
+  reviews: v.array(reviewSchema),
+};
+
+export const taskSchema: v.GenericSchema<unknown, _Task_Doctor_> = v.variant("state", [
+  v.strictObject({ state: v.literal("draft"), ...taskBase }),
+  v.strictObject({ state: v.literal("working"), ...taskBase, ...activated, proposals: v.array(proposalSchema) }),
+  v.strictObject({ state: v.literal("reviewing"), ...taskBase, ...activated, proposals: v.array(proposalSchema) }),
+  v.strictObject({
+    state: v.literal("parked"),
+    ...taskBase,
+    ...activated,
+    proposals: v.array(finalProposalSchema),
+    parked: stampSchema,
+  }),
+  v.strictObject({
+    state: v.literal("completed"),
+    ...taskBase,
+    ...activated,
+    proposals: v.array(finalProposalSchema),
+    completed: stampSchema,
+  }),
+  v.strictObject({
+    state: v.literal("canceled"),
+    ...taskBase,
+    ...activated,
+    proposals: v.array(finalProposalSchema),
+    canceled: stampSchema,
+    reason: reasonSchema,
   }),
 ]);

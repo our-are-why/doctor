@@ -22,6 +22,44 @@ export type _Connect_Endpoint_ = (
   send: (message: _Message_Server_) => void,
 ) => _Session_Endpoint_;
 
+// an HTTP request, its body read as JSON, and what's answered to it
+export interface _Request_Endpoint_ {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+export interface _Answer_Endpoint_ {
+  status: number;
+  body: unknown;
+}
+
+export type _Serve_Endpoint_ = (caller: _Author_Doctor_, request: _Request_Endpoint_) => Promise<_Answer_Endpoint_>;
+
+// bodies past this many bytes aren't read
+const bodyLimit = 5_000_000;
+
+function readBody(request: IncomingMessage): Promise<Array<unknown>> {
+  return new Promise((resolve) => {
+    const chunks: Array<Buffer> = [];
+    let size = 0;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= bodyLimit) chunks.push(chunk);
+    });
+    request.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf8");
+      if (size > bodyLimit) return resolve([]);
+      if (text.trim() === "") return resolve([null]);
+      try {
+        resolve([JSON.parse(text)]);
+      } catch {
+        resolve([]);
+      }
+    });
+  });
+}
+
 export interface _Tokens_Endpoint_ {
   human: _Token_Endpoint_;
   agent: _Token_Endpoint_;
@@ -76,18 +114,30 @@ function send(socket: { send: (data: string) => void }, message: _Message_Server
 export function startEndpoint(
   tokens: _Tokens_Endpoint_,
   connect: _Connect_Endpoint_,
+  serve: _Serve_Endpoint_,
 ): Promise<_Running_Endpoint_> {
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const caller = identify(tokens, bearerOf(request));
     if (caller.kind === "unknown") {
-      respond(response, 401, { error: "unknown caller" });
+      respond(response, 401, { issues: ["unknown caller"] });
       return;
     }
-    if (request.method === "GET" && request.url === "/status") {
+    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (request.method === "GET" && path === "/status") {
       respond(response, 200, { caller: caller.author });
       return;
     }
-    respond(response, 404, { error: "no such route" });
+    const [body] = await readBody(request);
+    if (body === undefined) {
+      respond(response, 400, { issues: [`the request's body isn't JSON of at most ${bodyLimit} bytes`] });
+      return;
+    }
+    try {
+      const answer = await serve(caller.author, { method: request.method ?? "GET", path, body });
+      respond(response, answer.status, answer.body);
+    } catch (someError) {
+      respond(response, 500, { issues: [`doctor failed: ${String(someError)}`] });
+    }
   });
 
   const sockets = new WebSocketServer({ noServer: true });

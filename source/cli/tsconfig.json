@@ -1,0 +1,10 @@
+{
+  // the agent's doctor command, run by VS Code's Node in a terminal: Node's
+  // APIs, nothing else
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": ["node"]
+  },
+  "include": ["**/*"]
+}

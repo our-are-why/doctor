@@ -5,7 +5,7 @@
   "scripts": {
     "makeCssTypes": "bun scripts/makeCssTypes.ts",
     "watchCssTypes": "bun scripts/makeCssTypes.ts --watch",
-    "check": "bun run makeCssTypes && tsc -p tsconfig.json && tsc -p source/extension && tsc -p source/webview && tsc -p source/shared",
+    "check": "bun run makeCssTypes && tsc -p tsconfig.json && tsc -p source/extension && tsc -p source/webview && tsc -p source/shared && tsc -p source/cli",
     "buildExtension": "bun run makeCssTypes && bun scripts/buildExtension.ts",
     "installExtension": "bun run makeCssTypes && bun scripts/installExtension.ts"
   },

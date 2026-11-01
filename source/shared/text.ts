@@ -112,10 +112,97 @@ export function difference(before: string, after: string): _Difference_Text_ {
   return { start: prefix, end: old.length - suffix, inserted: next.slice(prefix, next.length - suffix).join("") };
 }
 
-// the text with new characters, its overlay carried across the difference
-export function rewrite(text: _Text_Doctor_, characters: string): { text: _Text_Doctor_; change: _Difference_Text_ } {
-  const change = difference(text.text, characters);
-  return { text: replaceRange(text, change.start, change.end, change.inserted), change };
+// past this many characters a rewrite is taken as one replacement, from the
+// first difference to the last
+const diffLimit = 4000;
+
+// The fewest insertions and deletions that take before to after (Myers'
+// algorithm, over code points), as the replacements they make, in order.
+export function differences(before: string, after: string): Array<_Difference_Text_> {
+  const outer = difference(before, after);
+  const old = Array.from(before).slice(outer.start, outer.end);
+  const next = Array.from(outer.inserted);
+  if (old.length === 0 && next.length === 0) return [];
+  if (old.length + next.length > diffLimit) return [outer];
+  const max = old.length + next.length;
+  const furthest: Array<number> = new Array(2 * max + 2).fill(0);
+  const trace: Array<Array<number>> = [];
+  let steps = 0;
+  search: for (; steps <= max; steps += 1) {
+    trace.push([...furthest]);
+    for (let diagonal = -steps; diagonal <= steps; diagonal += 2) {
+      const down = diagonal === -steps || (diagonal !== steps && (furthest[max + diagonal - 1] ?? 0) < (furthest[max + diagonal + 1] ?? 0));
+      let x = down ? (furthest[max + diagonal + 1] ?? 0) : (furthest[max + diagonal - 1] ?? 0) + 1;
+      let y = x - diagonal;
+      while (x < old.length && y < next.length && old[x] === next[y]) {
+        x += 1;
+        y += 1;
+      }
+      furthest[max + diagonal] = x;
+      if (x >= old.length && y >= next.length) break search;
+    }
+  }
+  // walked back from the end, each step keeps, deletes or inserts one
+  // character; a run of deletions and insertions is one replacement
+  const path: Array<"keep" | "delete" | "insert"> = [];
+  let x = old.length;
+  let y = next.length;
+  for (let step = steps; step > 0; step -= 1) {
+    const at = trace[step] ?? [];
+    const diagonal = x - y;
+    const down = diagonal === -step || (diagonal !== step && (at[max + diagonal - 1] ?? 0) < (at[max + diagonal + 1] ?? 0));
+    const previous = down ? diagonal + 1 : diagonal - 1;
+    const fromX = at[max + previous] ?? 0;
+    const fromY = fromX - previous;
+    while (x > fromX && y > fromY) {
+      path.push("keep");
+      x -= 1;
+      y -= 1;
+    }
+    path.push(down ? "insert" : "delete");
+    if (down) y -= 1;
+    else x -= 1;
+  }
+  while (x > 0 && y > 0) {
+    path.push("keep");
+    x -= 1;
+    y -= 1;
+  }
+  const replacements: Array<_Difference_Text_> = [];
+  let inOld = outer.start;
+  let inNext = 0;
+  let last: "keep" | "change" = "keep";
+  for (const step of path.reverse()) {
+    if (step === "keep") {
+      inOld += 1;
+      inNext += 1;
+      last = "keep";
+      continue;
+    }
+    if (last === "keep") replacements.push({ start: inOld, end: inOld, inserted: "" });
+    last = "change";
+    const current = replacements.at(-1);
+    if (current === undefined) continue;
+    if (step === "delete") {
+      current.end += 1;
+      inOld += 1;
+    } else {
+      current.inserted += next[inNext] ?? "";
+      inNext += 1;
+    }
+  }
+  return replacements;
+}
+
+// the text with new characters, its overlay carried across each replacement,
+// the last first so the earlier ones' offsets still hold
+export function rewrite(
+  text: _Text_Doctor_,
+  characters: string,
+): { text: _Text_Doctor_; changes: Array<_Difference_Text_> } {
+  const changes = differences(text.text, characters);
+  const rewritten = changes.toReversed().reduce((each, change) => replaceRange(each, change.start, change.end, change.inserted), text);
+  return { text: rewritten, changes };
 }
 
 export function splitText(text: _Text_Doctor_, at: number): [_Text_Doctor_, _Text_Doctor_] {

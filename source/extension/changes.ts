@@ -5,6 +5,7 @@ import type {
   _Document_Doctor_,
   _Operation_Change_,
   _Ref_Change_,
+  _Source_Change_,
   _Stamp_Doctor_,
 } from "../shared/domain.next.ts";
 import { mintId } from "../shared/id.ts";
@@ -18,6 +19,7 @@ export interface _Request_Change_ {
   file: string;
   data: string;
   author: _Author_Doctor_;
+  source: _Source_Change_;
   operations: _NonEmpty_<_Operation_Change_>;
 }
 
@@ -27,8 +29,11 @@ interface __BASE_Outcome__Change_<__OutcomeKind__ extends string> {
   kind: __OutcomeKind__;
 }
 
+// a change that left the document as it was is in no history, so it has
+// no reference
 export interface _APPLIED_Outcome__Change_ extends __BASE_Outcome__Change_<"applied"> {
   document: _Document_Doctor_;
+  change: Array<_Ref_Change_>;
 }
 
 export interface _REFUSED_Outcome__Change_ extends __BASE_Outcome__Change_<"refused"> {
@@ -47,7 +52,7 @@ async function record(request: _Request_Change_): Promise<_Outcome_Change_> {
   if (result.kind === "refused") return { kind: "refused", issues: [result.issue] };
   const parent = await storeVersion(request.data, read.value);
   const version = await storeVersion(request.data, result.document);
-  if (version === parent) return { kind: "applied", document: read.value };
+  if (version === parent) return { kind: "applied", document: read.value, change: [] };
   await appendEntry(request.data, change.document, {
     kind: "change",
     document: change.document,
@@ -55,11 +60,11 @@ async function record(request: _Request_Change_): Promise<_Outcome_Change_> {
     made: stamp(request.author),
     id: change.id,
     parent,
-    source: { kind: "inline" },
+    source: request.source,
     operations: request.operations,
   });
   await writeDocument(request.file, result.document);
-  return { kind: "applied", document: result.document };
+  return { kind: "applied", document: result.document, change: [change] };
 }
 
 // inline changes apply to whatever the document is now, if they fit

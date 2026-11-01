@@ -413,6 +413,7 @@ export type _Task_Doctor_ =
   | _DRAFT_Task__Doctor_
   | _WORKING_Task__Doctor_
   | _REVIEWING_Task__Doctor_
+  | _PARKED_Task__Doctor_
   | _COMPLETED_Task__Doctor_
   | _CANCELED_Task__Doctor_;
 
@@ -451,6 +452,13 @@ export interface _REVIEWING_Task__Doctor_<__Proposal__ extends _Proposal_Task_ =
 export interface _COMPLETED_Task__Doctor_
   extends __ACTIVATED_Task__Doctor_<"completed", _FINAL_Proposal__Task_> {
   completed: _Stamp_Doctor_;
+}
+
+// set aside, to be resumed: what it made is kept, and what was still
+// waiting for review was withdrawn when it was parked
+export interface _PARKED_Task__Doctor_
+  extends __ACTIVATED_Task__Doctor_<"parked", _FINAL_Proposal__Task_> {
+  parked: _Stamp_Doctor_;
 }
 
 export interface _CANCELED_Task__Doctor_
@@ -574,13 +582,23 @@ export type _SUBMIT_Transition__Task_ = (task: _WORKING_Task__Doctor_) => _REVIE
 
 export type _RETURN_Transition__Task_ = (task: _REVIEWING_Task__Doctor_) => _WORKING_Task__Doctor_;
 
+export type _PARK_Transition__Task_ = (
+  task: _ACTIVE_Task__Doctor_,
+  parked: _Stamp_Doctor_,
+) => _PARKED_Task__Doctor_;
+
+export type _RESUME_Transition__Task_ = (
+  task: _PARKED_Task__Doctor_,
+  activated: _Stamp_Doctor_,
+) => _WORKING_Task__Doctor_;
+
 export type _COMPLETE_Transition__Task_ = (
-  task: _ACTIVE_Task__Doctor_<_FINAL_Proposal__Task_>,
+  task: _ACTIVE_Task__Doctor_<_FINAL_Proposal__Task_> | _PARKED_Task__Doctor_,
   completed: _Stamp_Doctor_,
 ) => _COMPLETED_Task__Doctor_;
 
 export type _CANCEL_Transition__Task_ = (
-  task: _ACTIVE_Task__Doctor_,
+  task: _ACTIVE_Task__Doctor_ | _PARKED_Task__Doctor_,
   canceled: _Stamp_Doctor_,
   reason: _Reason_Task_,
 ) => _CANCELED_Task__Doctor_;

@@ -1,14 +1,23 @@
 import { textOperations } from "../shared/apply.ts";
 import type {
+  _Block_Document_,
   _Contrast_Mark_,
   _Document_Doctor_,
   _Holder_Text_,
   _Id_Node_,
+  _Id_Proposal_,
+  _Id_Task_,
   _LINK_Mark__Text_,
+  _Node_Document_,
   _Operation_Change_,
+  _Position_Operation_,
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
+import { parseOwn } from "../shared/parse.ts";
 import { contentStart, project, startsBlock } from "../shared/projection.ts";
+import { realize } from "../shared/proposals.ts";
+import type { _Open_Proposal_, _Verdict_Review_ } from "../shared/protocol.ts";
+import { nodeIdSchema } from "../shared/schema.ts";
 import { readTarget, writeTarget } from "../shared/target.ts";
 import { lengthOf, relink, segmentsOf, toggleContrast, type _Segment_Text_ } from "../shared/text.ts";
 import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
@@ -21,6 +30,8 @@ export interface _Hooks_View_ {
   edited: (lines: Array<string>, owners: Array<Array<_Id_Node_>>) => void;
   perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>) => void;
   leave: () => void;
+  makeTask: (scope: Array<_Id_Node_>) => void;
+  review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
 }
 
 export interface _View_Text_ {
@@ -28,7 +39,7 @@ export interface _View_Text_ {
   track: (owners: Array<Array<_Id_Node_>>) => void;
   decorate: (document: _Document_Doctor_) => void;
   mark: (issues: Array<string>) => void;
-  propose: (node: _Id_Node_, text: string) => void;
+  proposals: (open: Array<_Open_Proposal_>) => void;
   dispose: () => void;
 }
 
@@ -433,49 +444,233 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     hooks.perform(() => [...changed.values()].flatMap((entry) => textOperations(entry.holder, entry.before, entry.after)));
   };
 
-  const clearProposal = () => {
+  // what a proposal would add, as lines in the editor's own syntax
+  let previewCount = 0;
+  const previewId = () => {
+    previewCount += 1;
+    return parseOwn(nodeIdSchema, `prev${previewCount.toString(36).padStart(6, "0")}`);
+  };
+  const subtreeLines = (shown: _Document_Doctor_, node: _Node_Document_): Array<string> => {
+    const block: _Block_Document_ = node.kind === "listItem" ? { kind: "list", id: previewId(), order: "unordered", children: [node] } : node;
+    return project({ ...shown, content: { title: { text: "", overlay: [] }, children: [block] }, notes: [] }).lines.slice(2);
+  };
+
+  // Monaco lays view zones beneath its lines of text, where clicks never
+  // reach them, so a proposal's controls sit in an overlay widget kept level
+  // with an empty zone that makes room for them, as VS Code's peek views do
+  let headers: Array<monaco.editor.IOverlayWidget> = [];
+  const placeHeader = (node: HTMLElement) => {
+    const info = editor.getLayoutInfo();
+    node.style.left = `${info.contentLeft}px`;
+    node.style.width = `${info.width - info.contentLeft - info.verticalScrollbarWidth - info.minimap.minimapWidth}px`;
+  };
+  editor.onDidLayoutChange(() => {
+    for (const widget of headers) placeHeader(widget.getDomNode());
+  });
+
+  const clearProposals = () => {
     editor.changeViewZones((accessor) => {
       for (const zone of zones) accessor.removeZone(zone);
     });
     zones = [];
+    for (const widget of headers) editor.removeOverlayWidget(widget);
+    headers = [];
     proposal.clear();
   };
 
-  // a stand-in for a task's proposal: the node's text struck through, and
-  // the proposed text beneath it, to accept or reject
-  const propose = (node: _Id_Node_, text: string) => {
-    const at = ownersNow().findIndex((owner) => owner.includes(node));
-    if (at === -1) return;
-    const line = at + 1;
-    const content = model.getLineContent(line);
-    const start = contentStart(content);
-    proposal.set([
-      { range: new monaco.Range(line, start + 1, line, content.length + 1), options: { inlineClassName: styles.removed } },
-    ]);
-    const zone = document.createElement("div");
-    zone.className = styles.proposal;
-    const added = document.createElement("div");
-    added.className = styles.added;
-    added.textContent = text;
-    const accept = document.createElement("button");
-    accept.textContent = "Accept";
-    const reject = document.createElement("button");
-    reject.textContent = "Reject";
-    const actions = document.createElement("div");
-    actions.className = styles.actions;
-    actions.append(accept, reject);
-    zone.append(added, actions);
-    accept.addEventListener("click", () => {
-      const now = ownersNow().findIndex((owner) => owner.includes(node)) + 1;
-      clearProposal();
-      if (now === 0) return;
-      const current = model.getLineContent(now);
-      const begin = contentStart(current);
-      editor.executeEdits("doctor", [{ range: new monaco.Range(now, begin + 1, now, current.length + 1), text }]);
-    });
-    reject.addEventListener("click", clearProposal);
+  // Proposals waiting for review, shown where they'd change the document:
+  // what they'd take away struck through, what they'd add beneath, and above
+  // each one its task's instruction and what you can do with it.
+  const showProposals = (open: Array<_Open_Proposal_>) => {
+    clearProposals();
+    const [shown] = documents;
+    if (shown === undefined || open.length === 0) return;
+    const owners = ownersNow();
+    const index = indexNodes(shown.content);
+    const height = editor.getOption(monaco.editor.EditorOption.lineHeight);
+    const lineOf = (node: _Id_Node_) => owners.findIndex((owner) => owner.includes(node)) + 1;
+    // a node's first line: its own, or a list's or a quote's first child's
+    const startOf = (node: _Id_Node_): number => {
+      const entry = index.get(node);
+      const lines = (entry === undefined ? [] : nodesWithin(entry.node)).map((each) => lineOf(each.id)).filter((line) => line > 0);
+      return lines.length === 0 ? 0 : Math.min(...lines);
+    };
+    // a node's last line: before the next line held by a node outside it
+    const endOf = (node: _Id_Node_, start: number): number => {
+      const entry = index.get(node);
+      const inside = new Set<string>(entry === undefined ? [node] : nodesWithin(entry.node).map((each) => each.id));
+      let last = start;
+      for (let at = start + 1; at <= model.getLineCount(); at += 1) {
+        const [owner] = owners[at - 1] ?? [];
+        if (owner !== undefined && !inside.has(owner)) break;
+        if (!/^>*$/.test(model.getLineContent(at).trim())) last = at;
+      }
+      return last;
+    };
+    const placeAfter = (at: _Position_Operation_, fallback: number): number => {
+      if (at.kind === "after") {
+        const line = startOf(at.sibling);
+        return line === 0 ? fallback : endOf(at.sibling, line);
+      }
+      if (at.parent.kind === "body") return 1;
+      const own = lineOf(at.parent.node);
+      if (own > 0) return own;
+      const first = startOf(at.parent.node);
+      return first === 0 ? fallback : first - 1;
+    };
+    const element = (tag: string, className: string, content: string) => {
+      const made = window.document.createElement(tag);
+      made.className = className;
+      made.textContent = content;
+      return made;
+    };
+    // each line with its markers drawn as the editor draws them
+    const linesZone = (lines: Array<string>) => {
+      const zone = element("div", styles.proposalAdded, "");
+      for (const line of lines) {
+        const shownLine = element("div", styles.proposalLine, "");
+        let at = 0;
+        for (const piece of markPieces(line)) {
+          shownLine.append(line.slice(at, piece.from), element("span", piece.className, line.slice(piece.from, piece.to)));
+          at = piece.to;
+        }
+        shownLine.append(line === "" ? " " : line.slice(at));
+        shownLine.style.height = `${height}px`;
+        shownLine.style.lineHeight = `${height}px`;
+        zone.append(shownLine);
+      }
+      return zone;
+    };
+    const widgets: Array<monaco.editor.IOverlayWidget> = [];
+    const header = (item: _Open_Proposal_) => {
+      const zone = element("div", styles.proposalHeader, "");
+      zone.style.top = "-1000px";
+      placeHeader(zone);
+      widgets.push({ getId: () => `doctor.proposal.${item.proposal}`, getDomNode: () => zone, getPosition: () => null });
+      const feedback = window.document.createElement("input");
+      feedback.className = styles.proposalInput;
+      feedback.placeholder = "what should change…";
+      const accept = element("button", styles.proposalAccept, "Accept");
+      const reject = element("button", styles.proposalButton, "Reject");
+      const request = element("button", styles.proposalButton, "Request changes");
+      const requestChanges = () => {
+        const written = feedback.value.trim();
+        if (written === "") {
+          feedback.focus();
+          return;
+        }
+        hooks.review(item.task, item.proposal, { kind: "request", feedback: written });
+      };
+      accept.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "accept" }));
+      reject.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "reject", reason: feedback.value.trim() }));
+      request.addEventListener("click", requestChanges);
+      feedback.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") requestChanges();
+      });
+      zone.append(element("span", styles.proposalTitle, `proposal · ${item.instruction}`), accept, reject, feedback, request);
+      return zone;
+    };
+    const added: Array<{ after: number; node: HTMLElement; lines: number; level: Array<HTMLElement> }> = [];
+    const struck: Array<monaco.editor.IModelDeltaDecoration> = [];
+    const strike = (from: number, to: number, start: number) => {
+      for (let line = from; line <= to; line += 1) {
+        const content = model.getLineContent(line);
+        struck.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className: styles.removedLine } });
+        const begin = line === from ? start : 0;
+        if (content.length > begin) {
+          struck.push({ range: new monaco.Range(line, begin + 1, line, content.length + 1), options: { inlineClassName: styles.removed } });
+        }
+      }
+    };
+    for (const item of open) {
+      const touched: Array<number> = [];
+      const pieces: Array<{ after: number; node: HTMLElement; lines: number; level: Array<HTMLElement> }> = [];
+      const add = (after: number, lines: Array<string>) => {
+        pieces.push({ after, node: linesZone(lines), lines: Math.max(lines.length, 1), level: [] });
+        touched.push(after + 1);
+      };
+      let last = 1;
+      for (const operation of realize(item.operations, previewId)) {
+        switch (operation.kind) {
+          case "write":
+          case "style": {
+            const line = operation.holder.kind === "title" ? 1 : lineOf(operation.holder.node);
+            if (line === 0) break;
+            const content = model.getLineContent(line);
+            const start = contentStart(content);
+            if (operation.kind === "write") strike(line, line, start);
+            touched.push(line);
+            add(line, [operation.kind === "write" ? `${content.slice(0, start)}${operation.text}` : `${content}  (restyled)`]);
+            last = line;
+            break;
+          }
+          case "edit": {
+            const line = startOf(operation.node);
+            if (line === 0) break;
+            const end = endOf(operation.node, line);
+            touched.push(line);
+            if (operation.content.kind === "code") {
+              strike(line + 1, end - 1, 0);
+              add(end - 1, operation.content.code.split("\n"));
+            } else {
+              add(line - 1, [`(this list becomes ${operation.content.order === "ordered" ? "numbered" : "bulleted"})`]);
+            }
+            last = end;
+            break;
+          }
+          case "delete": {
+            const line = startOf(operation.node);
+            if (line === 0) break;
+            const end = endOf(operation.node, line);
+            strike(line, end, 0);
+            touched.push(line);
+            last = end;
+            break;
+          }
+          case "insert": {
+            const after = placeAfter(operation.at, last);
+            add(after, subtreeLines(shown, operation.subtree));
+            last = after;
+            break;
+          }
+          case "move": {
+            const line = startOf(operation.node);
+            const node = index.get(operation.node)?.node;
+            if (line === 0 || node === undefined) break;
+            strike(line, endOf(operation.node, line), 0);
+            touched.push(line);
+            const after = placeAfter(operation.to, last);
+            add(after, subtreeLines(shown, node).map((each, at) => (at === 0 ? `${each}  (moved here)` : each)));
+            last = after;
+            break;
+          }
+        }
+      }
+      if (touched.length === 0) continue;
+      const room = element("div", "", "");
+      added.push({ after: Math.max(Math.min(...touched) - 1, 0), node: room, lines: 2, level: [header(item)] }, ...pieces);
+    }
+    proposal.set(struck);
+    headers = widgets;
+    for (const widget of headers) editor.addOverlayWidget(widget);
     editor.changeViewZones((accessor) => {
-      zones = [accessor.addZone({ afterLineNumber: line, heightInLines: 3, domNode: zone, suppressMouseDown: true })];
+      // a header comes before what's added after the same line
+      zones = added.map((zone, at) =>
+        accessor.addZone({
+          afterLineNumber: zone.after,
+          heightInLines: zone.lines,
+          domNode: zone.node,
+          ordinal: at,
+          suppressMouseDown: true,
+          onDomNodeTop: (top) => {
+            for (const node of zone.level) node.style.top = `${top}px`;
+          },
+          onComputedHeight: (computed) => {
+            for (const node of zone.level) node.style.height = `${computed}px`;
+          },
+        }),
+      );
     });
   };
 
@@ -686,6 +881,28 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   editor.addCommand(KeyCode.Delete, joinNext, "doctorBlockEnd");
   editor.addCommand(KeyCode.Backspace, joinPrevious, "doctorBlockStart");
 
+  // a task about the blocks the selection touches; a code block's lines are
+  // its block's
+  const scopeOfSelection = (): Array<_Id_Node_> => {
+    const owners = ownersNow();
+    const kinds = lineKinds();
+    const found = new Set<_Id_Node_>();
+    for (const selection of editor.getSelections() ?? []) {
+      for (let line = selection.startLineNumber; line <= selection.endLineNumber; line += 1) {
+        let at = line;
+        while (at > 1 && kinds[at - 1] === "code" && (owners[at - 1] ?? []).length === 0) at -= 1;
+        for (const id of owners[at - 1] ?? []) found.add(id);
+      }
+    }
+    return [...found];
+  };
+  editor.addAction({
+    id: "doctor.task",
+    label: "doctor: new task",
+    contextMenuGroupId: "0_doctor",
+    run: () => hooks.makeTask(scopeOfSelection()),
+  });
+
   // a numbered list's numbers, kept right as items come and go and move
   const renumber = () => {
     const edits: Array<monaco.editor.IIdentifiedSingleEditOperation> = [];
@@ -841,7 +1058,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     track,
     decorate,
     mark,
-    propose,
+    proposals: showProposals,
     dispose: () => {
       observer.disconnect();
       hover.dispose();
@@ -849,10 +1066,4 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
       model.dispose();
     },
   };
-}
-
-// the last paragraph in reading order, for the stand-in proposal
-export function lastParagraph(document: _Document_Doctor_): Array<_Id_Node_> {
-  const paragraphs = document.content.children.flatMap(nodesWithin).filter((node) => node.kind === "paragraph");
-  return paragraphs.slice(-1).map((node) => node.id);
 }

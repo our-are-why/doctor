@@ -131,6 +131,14 @@ export async function buildExtension(): Promise<string> {
     // ws loads these native speedups only if they're installed
     external: ["vscode", "bufferutil", "utf-8-validate"],
   });
+  // the agent's doctor command, which VS Code's Node runs
+  await bundle({
+    entrypoints: ["source/cli/main.ts"],
+    target: "node",
+    format: "cjs",
+    outdir: extensionDirectory,
+    naming: "cli.js",
+  });
   // one build per webview, so each gets its own stylesheet even when they
   // share styles
   for (const webview of ["document", "text", "dashboard"]) {

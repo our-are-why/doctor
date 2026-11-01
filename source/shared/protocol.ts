@@ -1,8 +1,28 @@
 import * as v from "valibot";
 import type { _Proof_, _Role_ } from "./brand.ts";
-import type { _Author_Doctor_, _Document_Doctor_, _Operation_Change_ } from "./domain.next.ts";
+import type {
+  _Author_Doctor_,
+  _Document_Doctor_,
+  _DRAFT_Id__Node_,
+  _Id_Node_,
+  _Id_Proposal_,
+  _Id_Task_,
+  _Operation_Change_,
+  _Task_Doctor_,
+} from "./domain.next.ts";
 import type { _NonEmpty_ } from "./list.ts";
-import { authorSchema, documentSchema, operationsSchema } from "./schema.ts";
+import {
+  authorSchema,
+  documentIdSchema,
+  documentSchema,
+  nodeIdSchema,
+  operationsSchema,
+  proposalIdSchema,
+  proposalOperationsSchema,
+  taskIdSchema,
+  taskSchema,
+  versionSchema,
+} from "./schema.ts";
 
 export type _Token_Endpoint_ = _Role_<string, "EndpointToken">;
 export type _Url_Endpoint_ = _Proof_<string, "EndpointUrl">;
@@ -18,7 +38,14 @@ export const endpointUrlSchema: v.GenericSchema<unknown, _Url_Endpoint_> = v.cus
 
 const issuesSchema: v.GenericSchema<unknown, _NonEmpty_<string>> = v.tupleWithRest([v.string()], v.string());
 
-export type _Message_Client_ = _OPEN_Message__Client_ | _CHANGE_Message__Client_;
+export type _Message_Client_ =
+  | _OPEN_Message__Client_
+  | _CHANGE_Message__Client_
+  | _TASK_Message__Client_
+  | _REVIEW_Message__Client_
+  | _WATCH_Message__Client_
+  | _ACTIVATE_Message__Client_
+  | _PARK_Message__Client_;
 
 interface __BASE_Message__Client_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -33,7 +60,58 @@ export interface _CHANGE_Message__Client_ extends __BASE_Message__Client_<"chang
   operations: _NonEmpty_<_Operation_Change_>;
 }
 
+// a task to make, about these nodes of the file
+export interface _TASK_Message__Client_ extends __BASE_Message__Client_<"task"> {
+  file: string;
+  scope: Array<_Id_Node_>;
+}
+
+export interface _REVIEW_Message__Client_ extends __BASE_Message__Client_<"review"> {
+  task: _Id_Task_;
+  proposal: _Id_Proposal_;
+  verdict: _Verdict_Review_;
+}
+
+export type _Verdict_Review_ = _ACCEPT_Verdict__Review_ | _REJECT_Verdict__Review_ | _REQUEST_Verdict__Review_;
+
+interface __BASE_Verdict__Review_<__VerdictKind__ extends string> {
+  kind: __VerdictKind__;
+}
+
+export interface _ACCEPT_Verdict__Review_ extends __BASE_Verdict__Review_<"accept"> {}
+
+export interface _REJECT_Verdict__Review_ extends __BASE_Verdict__Review_<"reject"> {
+  reason: string;
+}
+
+export interface _REQUEST_Verdict__Review_ extends __BASE_Verdict__Review_<"request"> {
+  feedback: string;
+}
+
+// the tasks, kept current: what the dashboard shows
+export interface _WATCH_Message__Client_ extends __BASE_Message__Client_<"watch"> {}
+
+// makes a draft or parked task the active one, parking any other
+export interface _ACTIVATE_Message__Client_ extends __BASE_Message__Client_<"activate"> {
+  task: _Id_Task_;
+}
+
+export interface _PARK_Message__Client_ extends __BASE_Message__Client_<"park"> {
+  task: _Id_Task_;
+}
+
+const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kind", [
+  v.strictObject({ kind: v.literal("accept") }),
+  v.strictObject({ kind: v.literal("reject"), reason: v.string() }),
+  v.strictObject({ kind: v.literal("request"), feedback: v.pipe(v.string(), v.minLength(1)) }),
+]);
+
 export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v.variant("kind", [
+  v.strictObject({ kind: v.literal("task"), file: v.string(), scope: v.array(nodeIdSchema) }),
+  v.strictObject({ kind: v.literal("review"), task: taskIdSchema, proposal: proposalIdSchema, verdict: verdictSchema }),
+  v.strictObject({ kind: v.literal("watch") }),
+  v.strictObject({ kind: v.literal("activate"), task: taskIdSchema }),
+  v.strictObject({ kind: v.literal("park"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("open"), file: v.string() }),
   v.strictObject({
     kind: v.literal("change"),
@@ -48,7 +126,9 @@ export type _Message_Server_ =
   | _UNREADABLE_Message__Server_
   | _APPLIED_Message__Server_
   | _UPDATED_Message__Server_
-  | _REFUSED_Message__Server_;
+  | _REFUSED_Message__Server_
+  | _PROPOSALS_Message__Server_
+  | _TASKS_Message__Server_;
 
 interface __BASE_Message__Server_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -85,7 +165,41 @@ export interface _REFUSED_Message__Server_ extends __BASE_Message__Server_<"refu
   issues: _NonEmpty_<string>;
 }
 
+// a proposal waiting for review, as a file's viewers show it
+export interface _Open_Proposal_ {
+  task: _Id_Task_;
+  instruction: string;
+  proposal: _Id_Proposal_;
+  operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
+}
+
+// the proposals waiting for review on a file, sent whenever they change
+export interface _PROPOSALS_Message__Server_ extends __BASE_Message__Server_<"proposals"> {
+  file: string;
+  open: Array<_Open_Proposal_>;
+  problems: Array<string>;
+}
+
+export interface _TASKS_Message__Server_ extends __BASE_Message__Server_<"tasks"> {
+  tasks: Array<_Task_Doctor_>;
+  problems: Array<string>;
+}
+
+const openProposalSchema: v.GenericSchema<unknown, _Open_Proposal_> = v.strictObject({
+  task: taskIdSchema,
+  instruction: v.string(),
+  proposal: proposalIdSchema,
+  operations: proposalOperationsSchema,
+});
+
 export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v.variant("kind", [
+  v.strictObject({
+    kind: v.literal("proposals"),
+    file: v.string(),
+    open: v.array(openProposalSchema),
+    problems: v.array(v.string()),
+  }),
+  v.strictObject({ kind: v.literal("tasks"), tasks: v.array(taskSchema), problems: v.array(v.string()) }),
   v.strictObject({ kind: v.literal("welcome"), caller: authorSchema }),
   v.strictObject({ kind: v.literal("opened"), file: v.string(), document: documentSchema }),
   v.strictObject({ kind: v.literal("unreadable"), file: v.string(), issues: issuesSchema }),
@@ -93,6 +207,14 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
   v.strictObject({ kind: v.literal("updated"), file: v.string(), document: documentSchema }),
   v.strictObject({ kind: v.literal("refused"), file: v.string(), issues: issuesSchema }),
 ]);
+
+// what the agent proposes: which document, the version of it it was shown,
+// and the operations that would change it
+export const proposalPayloadSchema = v.strictObject({
+  document: documentIdSchema,
+  base: versionSchema,
+  operations: proposalOperationsSchema,
+});
 
 export type _Config_Webview_ = _DOCUMENT_Config__Webview_ | _TEXT_Config__Webview_ | _DASHBOARD_Config__Webview_;
 
