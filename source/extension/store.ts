@@ -90,11 +90,11 @@ function objectsOf(document: _Document_Doctor_): _Objects_Version_ {
 
 export const versionOf = (document: _Document_Doctor_) => objectsOf(document).version;
 
-const objectFile = (folder: string, hash: string) =>
-  join(folder, ".doctor", "objects", hash.slice(0, 2), `${hash.slice(2)}.json`);
+const objectFile = (data: string, hash: string) =>
+  join(data, "objects", hash.slice(0, 2), `${hash.slice(2)}.json`);
 
-async function put(folder: string, hash: string, object: _Object_Store_): Promise<void> {
-  const file = objectFile(folder, hash);
+async function put(data: string, hash: string, object: _Object_Store_): Promise<void> {
+  const file = objectFile(data, hash);
   await mkdir(join(file, ".."), { recursive: true });
   try {
     await writeFile(file, `${canonicalJson(object)}\n`, { flag: "wx" });
@@ -104,34 +104,34 @@ async function put(folder: string, hash: string, object: _Object_Store_): Promis
 }
 
 // stores every object of the document's version that isn't stored yet
-export async function storeVersion(folder: string, document: _Document_Doctor_): Promise<_Version_Document_> {
+export async function storeVersion(data: string, document: _Document_Doctor_): Promise<_Version_Document_> {
   const { version, objects } = objectsOf(document);
-  await Promise.all(objects.map(([hash, object]) => put(folder, hash, object)));
+  await Promise.all(objects.map(([hash, object]) => put(data, hash, object)));
   return version;
 }
 
-async function readObject(folder: string, hash: string): Promise<_Object_Store_> {
-  const result = parse(storeObjectSchema, JSON.parse(await readFile(objectFile(folder, hash), "utf8")));
+async function readObject(data: string, hash: string): Promise<_Object_Store_> {
+  const result = parse(storeObjectSchema, JSON.parse(await readFile(objectFile(data, hash), "utf8")));
   if (result.kind === "rejected") throw new Error(`object ${hash}: ${result.issues.join("; ")}`);
   if (hashOf(result.value) !== hash) throw new Error(`object ${hash} doesn't match its hash`);
   return result.value;
 }
 
-async function loadNode(folder: string, hash: string): Promise<unknown> {
-  const object = await readObject(folder, hash);
+async function loadNode(data: string, hash: string): Promise<unknown> {
+  const object = await readObject(data, hash);
   if (object.kind !== "node") throw new Error(`object ${hash} is a version, not a node`);
-  const children = await Promise.all(object.children.map((child) => loadNode(folder, child)));
+  const children = await Promise.all(object.children.map((child) => loadNode(data, child)));
   const holds = object.content.kind !== "paragraph" && object.content.kind !== "code";
   if (!holds && children.length > 0) throw new Error(`object ${hash} is a ${object.content.kind} with children`);
   return holds ? { ...object.content, id: object.id, children } : { ...object.content, id: object.id };
 }
 
 // rebuilds a version from the store, parsed like any document
-export async function loadVersion(folder: string, version: _Version_Document_): Promise<_Result_Parse_<_Document_Doctor_>> {
+export async function loadVersion(data: string, version: _Version_Document_): Promise<_Result_Parse_<_Document_Doctor_>> {
   try {
-    const object = await readObject(folder, version);
+    const object = await readObject(data, version);
     if (object.kind !== "version") throw new Error(`object ${version} is a node, not a version`);
-    const children = await Promise.all(object.children.map((child) => loadNode(folder, child)));
+    const children = await Promise.all(object.children.map((child) => loadNode(data, child)));
     return parse(documentSchema, {
       kind: "document",
       formatVersion: 1,
@@ -144,8 +144,8 @@ export async function loadVersion(folder: string, version: _Version_Document_): 
   }
 }
 
-export async function appendEntry(folder: string, document: _Id_Document_, entry: _Entry_History_): Promise<void> {
-  const history = join(folder, ".doctor", "history");
+export async function appendEntry(data: string, document: _Id_Document_, entry: _Entry_History_): Promise<void> {
+  const history = join(data, "history");
   await mkdir(history, { recursive: true });
   await appendFile(join(history, `${document}.jsonl`), `${JSON.stringify(entry)}\n`);
 }

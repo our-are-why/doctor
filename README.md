@@ -29,6 +29,12 @@ then reload the window (Developer: Reload Window). In code-server:
 - "doctor: open the task dashboard" opens the dashboard as an editor tab;
 - "Terminal: Create New Terminal in Editor Area" puts a terminal beside them.
 
+Try documents in `playground/`, which git ignores: copy one from `samples/`
+(`cp samples/sample.doctor.json playground/`) and edit it freely. This repo's
+`.vscode/settings.json` sets `doctor.dataFolder` to `playground/.doctor`, so
+the history editing makes stays there too; in other projects it's `.doctor`
+at the workspace root.
+
 While you edit stylesheets, `bun run watchCssTypes` in a second terminal
 keeps their types current. `bun install` writes `bun.lock`, which is
 committed.

@@ -7,8 +7,12 @@
 # the packages bun install fetches; bun.lock records their versions
 node_modules/
 
-# the binary that bun run build compiles
+# what bun run buildExtension builds
 build/
+
+# documents to try doctor on, and their history: copies of samples/ to edit
+# freely, kept by this repo's doctor.dataFolder setting
+playground/
 
 # CSS modules' declarations, which bun run makeCssTypes writes beside each
 # stylesheet

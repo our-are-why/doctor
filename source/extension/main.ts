@@ -1,7 +1,8 @@
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
+import * as v from "valibot";
 import * as vscode from "vscode";
 import type { _Author_Doctor_ } from "../shared/domain.next.ts";
-import { parseOwn } from "../shared/parse.ts";
+import { parse, parseOwn } from "../shared/parse.ts";
 import {
   endpointUrlSchema,
   type _CHANGE_Message__Client_,
@@ -17,6 +18,15 @@ type _Send_Session_ = (message: _Message_Server_) => void;
 
 function folderOf(file: string): vscode.WorkspaceFolder | undefined {
   return file.endsWith(documentSuffix) ? vscode.workspace.getWorkspaceFolder(vscode.Uri.file(file)) : undefined;
+}
+
+const dataFolderSchema = v.pipe(v.string(), v.minLength(1));
+
+// where doctor keeps a workspace folder's history and versions: .doctor at
+// its root, unless the doctor.dataFolder setting says otherwise
+function dataFolderOf(folder: vscode.WorkspaceFolder): string {
+  const setting = parse(dataFolderSchema, vscode.workspace.getConfiguration("doctor", folder.uri).get("dataFolder"));
+  return resolve(folder.uri.fsPath, setting.kind === "parsed" ? setting.value : ".doctor");
 }
 
 const outsideIssue = `only ${documentSuffix} files in the workspace can be opened`;
@@ -45,7 +55,7 @@ async function change(caller: _Author_Doctor_, message: _CHANGE_Message__Client_
   }
   const outcome = await makeChange({
     file,
-    folder: folder.uri.fsPath,
+    data: dataFolderOf(folder),
     author: caller,
     operations: message.operations,
   });
@@ -105,7 +115,7 @@ async function newDocumentCommand(): Promise<void> {
     void vscode.window.showErrorMessage(`doctor documents live in the workspace, as *${documentSuffix} files`);
     return;
   }
-  await createDocument(file, into.uri.fsPath, newDocument(basename(file, documentSuffix)), "human");
+  await createDocument(file, dataFolderOf(into), newDocument(basename(file, documentSuffix)), "human");
   await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(file), documentViewType);
 }
 

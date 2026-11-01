@@ -16,6 +16,17 @@
         "priority": "default"
       }
     ],
+    "configuration": {
+      "title": "doctor",
+      "properties": {
+        "doctor.dataFolder": {
+          "type": "string",
+          "default": ".doctor",
+          "scope": "resource",
+          "description": "Where doctor keeps a workspace folder's history and versions, relative to the folder."
+        }
+      }
+    },
     "commands": [
       { "command": "doctor.newDocument", "title": "doctor: new document" },
       { "command": "doctor.openDashboard", "title": "doctor: open the task dashboard" }

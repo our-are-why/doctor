@@ -16,7 +16,7 @@ import { appendEntry, storeVersion } from "./store.ts";
 
 export interface _Request_Change_ {
   file: string;
-  folder: string;
+  data: string;
   author: _Author_Doctor_;
   operations: _NonEmpty_<_Operation_Change_>;
 }
@@ -45,10 +45,10 @@ async function record(request: _Request_Change_): Promise<_Outcome_Change_> {
   const change: _Ref_Change_ = { document: read.value.id, id: mintId(changeIdSchema, randomBytes(10)) };
   const result = applyOperations(read.value, request.operations, change);
   if (result.kind === "refused") return { kind: "refused", issues: [result.issue] };
-  const parent = await storeVersion(request.folder, read.value);
-  const version = await storeVersion(request.folder, result.document);
+  const parent = await storeVersion(request.data, read.value);
+  const version = await storeVersion(request.data, result.document);
   if (version === parent) return { kind: "applied", document: read.value };
-  await appendEntry(request.folder, change.document, {
+  await appendEntry(request.data, change.document, {
     kind: "change",
     document: change.document,
     version,
@@ -75,13 +75,13 @@ export function makeChange(request: _Request_Change_): Promise<_Outcome_Change_>
 
 export function createDocument(
   file: string,
-  folder: string,
+  data: string,
   document: _Document_Doctor_,
   author: _Author_Doctor_,
 ): Promise<void> {
   return exclusively(file, async () => {
-    const version = await storeVersion(folder, document);
-    await appendEntry(folder, document.id, { kind: "creation", document: document.id, version, made: stamp(author) });
+    const version = await storeVersion(data, document);
+    await appendEntry(data, document.id, { kind: "creation", document: document.id, version, made: stamp(author) });
     await writeDocument(file, document);
   });
 }
