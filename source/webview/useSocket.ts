@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import type { _Author_Doctor_ } from "../shared/domain.ts";
+import type { _Author_Doctor_ } from "../shared/domain.next.ts";
 import { parse } from "../shared/parse.ts";
 import {
   serverMessageSchema,

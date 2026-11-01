@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer } from "ws";
-import type { _Author_Doctor_ } from "../shared/domain.ts";
+import type { _Author_Doctor_ } from "../shared/domain.next.ts";
 import { parse, parseOwn } from "../shared/parse.ts";
 import {
   clientMessageSchema,
@@ -11,11 +11,16 @@ import {
   type _Token_Endpoint_,
 } from "../shared/protocol.ts";
 
-export type _Handler_Endpoint_ = (
+// what the endpoint does with one connection, from its first message to its close
+export interface _Session_Endpoint_ {
+  receive: (message: _Message_Client_) => void;
+  close: () => void;
+}
+
+export type _Connect_Endpoint_ = (
   caller: _Author_Doctor_,
-  message: _Message_Client_,
-  reply: (message: _Message_Server_) => void,
-) => void;
+  send: (message: _Message_Server_) => void,
+) => _Session_Endpoint_;
 
 export interface _Tokens_Endpoint_ {
   human: _Token_Endpoint_;
@@ -70,7 +75,7 @@ function send(socket: { send: (data: string) => void }, message: _Message_Server
 
 export function startEndpoint(
   tokens: _Tokens_Endpoint_,
-  handle: _Handler_Endpoint_,
+  connect: _Connect_Endpoint_,
 ): Promise<_Running_Endpoint_> {
   const server = createServer((request, response) => {
     const caller = identify(tokens, bearerOf(request));
@@ -95,6 +100,9 @@ export function startEndpoint(
     }
     sockets.handleUpgrade(request, socket, head, (client) => {
       const reply = (message: _Message_Server_) => send(client, message);
+      reply({ kind: "welcome", caller: caller.author });
+      const session = connect(caller.author, reply);
+      client.on("close", session.close);
       client.on("message", (data, isBinary) => {
         if (isBinary || !Buffer.isBuffer(data)) return;
         let raw: unknown;
@@ -104,9 +112,8 @@ export function startEndpoint(
           return;
         }
         const result = parse(clientMessageSchema, raw);
-        if (result.kind === "parsed") handle(caller.author, result.value, reply);
+        if (result.kind === "parsed") session.receive(result.value);
       });
-      reply({ kind: "welcome", caller: caller.author });
     });
   });
 

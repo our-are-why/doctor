@@ -2,62 +2,72 @@
   "kind": "document",
   "formatVersion": 1,
   "id": "d0c00000a1",
-  "revision": 1,
   "content": {
-    "title": [{ "kind": "run", "text": "A sample document", "contrast": [] }],
+    "title": { "text": "A sample document", "overlay": [] },
     "children": [
       {
         "kind": "paragraph",
         "id": "p000000001",
-        "text": [
-          { "kind": "run", "text": "Plain text, ", "contrast": [] },
-          { "kind": "run", "text": "bold", "contrast": ["bold"] },
-          { "kind": "run", "text": ", ", "contrast": [] },
-          { "kind": "run", "text": "italic", "contrast": ["italic"] },
-          { "kind": "run", "text": ", ", "contrast": [] },
-          { "kind": "run", "text": "both", "contrast": ["italic", "bold"] },
-          { "kind": "run", "text": ", ", "contrast": [] },
-          { "kind": "run", "text": "monospace", "contrast": ["monospace"] },
-          { "kind": "run", "text": ", ", "contrast": [] },
-          { "kind": "run", "text": "highlighted", "contrast": ["highlighted"] },
-          { "kind": "run", "text": ", ", "contrast": [] },
-          { "kind": "run", "text": "struck", "contrast": ["struck"] },
-          { "kind": "run", "text": " and a ", "contrast": [] },
+        "text": "Plain text, bold, italic, both, monospace, highlighted, struck and a link with bold inside.",
+        "overlay": [
+          { "kind": "contrast", "contrast": "bold", "from": 12, "to": 16 },
+          { "kind": "contrast", "contrast": "italic", "from": 18, "to": 24 },
+          { "kind": "contrast", "contrast": "bold", "from": 26, "to": 30 },
+          { "kind": "contrast", "contrast": "italic", "from": 26, "to": 30 },
+          { "kind": "contrast", "contrast": "monospace", "from": 32, "to": 41 },
+          { "kind": "contrast", "contrast": "highlighted", "from": 43, "to": 54 },
+          { "kind": "contrast", "contrast": "struck", "from": 56, "to": 62 },
           {
             "kind": "link",
-            "label": [
-              { "kind": "run", "text": "link with ", "contrast": [] },
-              { "kind": "run", "text": "bold", "contrast": ["bold"] },
-              { "kind": "run", "text": " inside", "contrast": [] }
-            ],
+            "from": 69,
+            "to": 90,
             "target": { "kind": "external", "url": "https://example.com" }
           },
-          { "kind": "run", "text": ".", "contrast": [] }
+          { "kind": "contrast", "contrast": "bold", "from": 79, "to": 83 }
         ]
       },
       {
         "kind": "section",
         "id": "s000000001",
-        "heading": [{ "kind": "run", "text": "A section", "contrast": [] }],
+        "heading": { "text": "A section", "overlay": [] },
         "children": [
           {
             "kind": "list",
             "id": "l000000001",
             "order": "unordered",
             "children": [
-              { "kind": "listItem", "id": "i000000001", "text": [{ "kind": "run", "text": "an item", "contrast": [] }], "children": [] },
+              {
+                "kind": "listItem",
+                "id": "i000000001",
+                "text": "an item",
+                "overlay": [],
+                "children": []
+              },
               {
                 "kind": "listItem",
                 "id": "i000000002",
-                "text": [{ "kind": "run", "text": "an item with a sub-list", "contrast": [] }],
+                "text": "an item with a sub-list",
+                "overlay": [],
                 "children": [
                   {
                     "kind": "list",
                     "id": "l000000002",
                     "order": "ordered",
                     "children": [
-                      { "kind": "listItem", "id": "i000000003", "text": [{ "kind": "run", "text": "first", "contrast": [] }], "children": [] },
-                      { "kind": "listItem", "id": "i000000004", "text": [{ "kind": "run", "text": "second", "contrast": [] }], "children": [] }
+                      {
+                        "kind": "listItem",
+                        "id": "i000000003",
+                        "text": "first",
+                        "overlay": [],
+                        "children": []
+                      },
+                      {
+                        "kind": "listItem",
+                        "id": "i000000004",
+                        "text": "second",
+                        "overlay": [],
+                        "children": []
+                      }
                     ]
                   }
                 ]
@@ -67,7 +77,7 @@
           {
             "kind": "section",
             "id": "s000000002",
-            "heading": [{ "kind": "run", "text": "A nested section", "contrast": [] }],
+            "heading": { "text": "A nested section", "overlay": [] },
             "children": [
               {
                 "kind": "code",
@@ -79,7 +89,12 @@
                 "kind": "quote",
                 "id": "q000000001",
                 "children": [
-                  { "kind": "paragraph", "id": "p000000002", "text": [{ "kind": "run", "text": "A quoted paragraph.", "contrast": ["italic"] }] }
+                  {
+                    "kind": "paragraph",
+                    "id": "p000000002",
+                    "text": "A quoted paragraph.",
+                    "overlay": [{ "kind": "contrast", "contrast": "italic", "from": 0, "to": 19 }]
+                  }
                 ]
               }
             ]
@@ -92,10 +107,10 @@
     {
       "kind": "node",
       "id": "n000000001",
-      "body": [{ "kind": "run", "text": "A note on the section.", "contrast": [] }],
+      "body": { "text": "A note on the section.", "overlay": [] },
       "written": { "by": "human", "at": "2026-11-01T00:00:00.000Z" },
       "node": "s000000001",
-      "confirmedAt": 1
+      "confirmedIn": "6379c645ac674211226fc7ce78302562913b7a2cde31c084d90b4c04b4d807c5"
     }
   ]
 }

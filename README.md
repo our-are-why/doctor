@@ -4,9 +4,10 @@ Reads, edits and annotates documents beside an agent such as Claude Code. A
 VS Code extension for code-server: its document editor and task dashboard
 are webviews, and the agent works in VS Code's own terminal.
 
-So far documents can be created and read: "doctor: new document" makes one,
-and the editor renders any `*.doctor.json`, or says why it can't. Editing,
-notes and tasks come next.
+So far documents can be created and edited in place: "doctor: new document"
+makes one, the editor opens any `*.doctor.json` (or says why it can't), and
+every save becomes a version in the document's history. Notes and tasks come
+next.
 
 ## Develop
 
@@ -50,8 +51,9 @@ committed.
     source/webview/     the webviews, in the browser: Preact with hooks, CSS
                         modules in styles/, one entry point per webview in
                         entries/
-    source/shared/      what both import: the domain's types (domain.ts), the
-                        protocol between them, and parsing
+    source/shared/      what both import: the domain's types (domain.next.ts,
+                        which replaced domain.ts), the protocol between them,
+                        parsing, and applying changes to a document
     scripts/            the project's own tools: building and installing the
                         extension, makeCssTypes.ts
     notes/              how types are built (type-construction.md)
@@ -79,6 +81,14 @@ What doctor is built from, and why:
   Each kind of caller, the human or the agent, has its own token; every new
   terminal gets the agent's in `DOCTOR_TOKEN`, with the address in
   `DOCTOR_ENDPOINT`.
+- **Text is characters with an overlay.** A text is a plain string, and its
+  contrast and links are marks over ranges of it, counted in code points. An
+  edit writes the characters and carries the marks across, or styles the
+  overlay.
+- **Versions, not revisions.** A version is the hash of a document's
+  content; `.doctor/objects/` stores each node under its own hash, so a
+  version shares every node it didn't change, and `.doctor/history/` logs
+  each change with the version it was applied to and the one it made.
 - **Every boundary is parsed.** Messages, webview configs and files are
   checked with Valibot into the domain's types, through a helper written
   against the Standard Schema interface.

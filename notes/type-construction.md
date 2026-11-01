@@ -67,18 +67,18 @@ something is.
   holds blocks, and so does a list item. cases that hold none are terminal
   (a paragraph, a code block), and every instance bottoms out in them. the
   test is whether following the references leads back to where you started:
-  block → section → block is a cycle, so it's recursive; inline → link → run
-  never comes back to inline. a case built from a sibling case is
-  composition: a link holds runs, and runs hold no links, so it's a parent
-  over a terminal, deliberately, so that actions stay unnested. a type is
-  recursive where nesting is meant.
+  block → section → block is a cycle, so it's recursive; text → mark never
+  comes back to text. a type built over another without holding itself is
+  composition: a mark lies over a text's characters and holds no text of
+  its own, deliberately, so that marks stay unnested. a type is recursive
+  where nesting is meant.
 - **stratification and recursion are separate properties.** stratification
   is conceptual: types at different semantic levels, a higher one built over
   lower ones, references pointing down. recursion is structural: a cycle.
   they often travel together, and each happens alone: blocks are recursive
-  without levels (a section and a paragraph are both blocks); inline text is
-  stratified without a cycle (a link is an action over runs); a list over its
-  items is both.
+  without levels (a section and a paragraph are both blocks); text is
+  stratified without a cycle (an overlay is a layer of marks over the
+  characters); a list over its items is both.
 - **position in a hierarchy can change what something is.** the root of a
   structure is rarely the same kind of thing as what's under it: a document's
   body has a title and no identity, so it can't be moved or deleted, while a
@@ -110,8 +110,8 @@ something is.
   after a sibling.
 - **an empty case is the zero of what the thing does.** where an empty case is
   real, it's an instance that changes nothing when it's composed in (an
-  identity element, in algebra): an empty list for a set of additions (a run
-  whose contrast is `[]` is plain); a no-op function for a callback. a zero
+  identity element, in algebra): an empty list for a set of additions (a
+  text whose overlay is `[]` is plain); a no-op function for a callback. a zero
   needs no check: code that uses it just works. where empty would mean
   nothing real (a change with no operations), the type requires non-empty.
 - **`null` belongs where a mechanism makes it the zero.** that's mechanical,
@@ -128,14 +128,15 @@ something is.
 ## additions whose opposite is absence
 
 some properties are asymmetric: having one adds something, and not having it
-is just its absence (a run's contrast: bold, italic, monospace, highlighted,
-struck). they're listed, not given a two-option status each:
+is just its absence (the marks over a text: a contrast here, a link there).
+they're listed, not given a two-option status each:
 
 - **only what's present is listed.** an empty list means none,
   unambiguously.
-- **the type enumerates every valid list.** each option at most once,
-  generated with a distributive conditional type, so it's only expanded where
-  it's used.
+- **the type enumerates every valid list, where it can.** with a few
+  options, each at most once, a distributive conditional type generates every
+  list, and is only expanded where it's used; where validity depends on the
+  values (one contrast's ranges mustn't overlap), the parser checks it.
 - **order means nothing, so they compare as sets.** any order is accepted,
   and comparison is by set, everywhere; imposing an order on something that
   has none would add a second, more fragile way to compare.
@@ -276,6 +277,4 @@ and stays as data while nothing does.
 ## still open
 
 - **field naming**, which will revisit names called provisional along the way.
-- **the link as a sibling of the run**, kept for now as the pragmatic shape
-  though it's really an umbrella over runs.
 - **which field states discriminate on**: their own, or the shared one.
