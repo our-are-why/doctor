@@ -195,8 +195,12 @@ anchored to nodes and passages, and proposals that say what they answer.
   instruction and a scope of nodes.
 - proposals have rounds. accept applies a proposal to the document
   straight away, as a change whose source is the proposal.
+- the agent proposes everything, then submits. a submitted task completes
+  on its own once every proposal is accepted or rejected, and goes back to
+  working when one is sent back for changes.
 - `doctor wait` gives the agent its turn: while the active task is in
-  working and nothing proposed waits for review.
+  working, and either something was sent back to revise or nothing proposed
+  waits for review.
 - the form beside the selection makes a task with one instruction.
 - documents keep a history log and every version in `.doctor/`.
 

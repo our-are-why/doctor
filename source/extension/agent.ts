@@ -69,12 +69,12 @@ async function taskView(place: _Place_Tasks_, task: _ACTIVE_Task__Doctor_) {
 function nextStep(task: _WORKING_Task__Doctor_): string {
   const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
   if (revising.length > 0) {
-    return `revise proposal ${revising.join(", ")} as its feedback asks, with \`doctor propose\` for its document against the base shown here; then run \`doctor wait\``;
+    return `revise proposal ${revising.join(", ")} as its feedback asks, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit\`, then \`doctor wait\``;
   }
   if (task.proposals.length === 0) {
-    return "propose changes to the task's scope with `doctor propose` (`doctor help` shows how), then run `doctor wait` for the review";
+    return "propose every change the task needs with `doctor propose` (`doctor help` shows how), one proposal per independent change; then `doctor submit` to hand them over, and `doctor wait`";
   }
-  return "every proposal is decided: propose more with `doctor propose` against the base shown here, or hand the task back with `doctor submit`; then run `doctor wait`";
+  return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it; then `doctor submit`, and `doctor wait`";
 }
 
 // what an agent is waiting on while it's the human's turn
@@ -188,7 +188,7 @@ export async function serveAgent(
     if (task === undefined) return issues(404, ["there's no active task to submit"]);
     const outcome = await submit(place, task.id);
     if (outcome.kind === "refused") return issues(409, outcome.issues);
-    return answer(200, { task: task.id, state: "reviewing" });
+    return answer(200, { task: task.id, state: outcome.value });
   }
   return issues(404, [`there's no route ${route}`]);
 }

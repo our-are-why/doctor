@@ -222,13 +222,25 @@ export async function activeTask(place: _Place_Tasks_): Promise<Array<_ACTIVE_Ta
   return (await listTasks(place)).filter(isActive);
 }
 
-// The agent's turn: the active task is being worked on, and nothing proposed
-// for it is waiting for review. It's the human's turn otherwise.
+// The agent's turn: the active task is being worked on, and either some of
+// what it proposed was sent back to be revised, or none of it is waiting for
+// review. It's the human's turn otherwise.
 export function agentsTurn(tasks: Array<_Task_Doctor_>): Array<_WORKING_Task__Doctor_> {
   return tasks.filter(
     (task): task is _WORKING_Task__Doctor_ =>
-      task.state === "working" && task.proposals.every((proposal) => proposal.state !== "proposed"),
+      task.state === "working" &&
+      (task.proposals.some((proposal) => proposal.state === "revising") ||
+        task.proposals.every((proposal) => proposal.state !== "proposed")),
   );
+}
+
+// A task in review completes once everything proposed for it is decided:
+// accepted or rejected, none of it sent back to be revised.
+function settled(task: _ACTIVE_Task__Doctor_, at: _Stamp_Doctor_): _Task_Doctor_ {
+  const finals = task.proposals.filter(isFinal);
+  return task.state === "reviewing" && finals.length === task.proposals.length
+    ? complete({ ...task, proposals: finals }, at)
+    : task;
 }
 
 export function parkTask(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
@@ -378,10 +390,18 @@ export function propose(
   });
 }
 
-export function submit(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
+// The agent hands the task over once it's proposed everything the task
+// needs, and it completes at once if nothing's left to review. What was
+// sent back for changes is revised first.
+export function submit(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Task_Doctor_["state"]>> {
   return updateTask(place, id, async (task) => {
     if (task.state !== "working") return refuse(`task ${id} is ${task.state}, so there's nothing to submit`);
-    return done({ task: { ...task, state: "reviewing" }, value: task.id });
+    const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
+    if (revising.length > 0) {
+      return refuse(`proposal ${revising.join(", ")} was sent back for changes: revise it with doctor propose, then submit`);
+    }
+    const submitted = settled({ ...task, state: "reviewing" }, stamp("agent"));
+    return done({ task: submitted, value: submitted.state });
   });
 }
 
@@ -475,7 +495,7 @@ export function accept(place: _Place_Tasks_, id: _Id_Task_, proposalId: _Id_Prop
     };
     const applies: Array<_Ref_Change_> = [...task.applied, change];
     return done({
-      task: { ...task, proposals: replace(task.proposals, accepted), applied: applies },
+      task: settled({ ...task, proposals: replace(task.proposals, accepted), applied: applies }, stamp("human")),
       value: { file, document: applied.document },
     });
   });
@@ -498,7 +518,7 @@ export function reject(
       rejected: stamp("human"),
       reason: reason.text === "" ? { kind: "unstated" } : { kind: "stated", text: reason },
     };
-    return done({ task: { ...task, proposals: replace(task.proposals, rejected) }, value: proposal.id });
+    return done({ task: settled({ ...task, proposals: replace(task.proposals, rejected) }, stamp("human")), value: proposal.id });
   });
 }
 

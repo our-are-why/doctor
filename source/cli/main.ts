@@ -3,10 +3,13 @@ import { readFile } from "node:fs/promises";
 const usage = `doctor: the agent's side of doctor's tasks
 
 Working on doctor's tasks is a loop: run doctor wait, take the step its "next"
-gives you, and run doctor wait again.
+gives you, and run doctor wait again. On a task, propose every change it needs,
+one proposal per independent change, then submit it: it completes once each
+proposal is accepted or rejected, and comes back to you if any is sent back for
+changes.
 
-  doctor wait [--for <s>]  wait for your turn: a task to work on, or what you proposed
-                           reviewed. Answers as doctor task does, with "turn" and
+  doctor wait [--for <s>]  wait for your turn: a task to work on, or proposals sent
+                           back for changes. Answers as doctor task does, with "turn" and
                            "next", the step to take. With --for, it gives up after that
                            many seconds, answering { "turn": "human", ... }
   doctor task              the active task: its instruction, and for each document in
@@ -16,7 +19,9 @@ gives you, and run doctor wait again.
   doctor propose <file>    propose changes; the file, or - for standard input, holds
                              { "document": <id>, "base": <version>, "operations": [...] }
                            where base is the version you read the document at
-  doctor submit            hand the active task back for review
+  doctor submit            hand the active task over for review, once you've proposed
+                           everything it needs; with nothing left to review, it
+                           completes
 
 Everything is JSON. When doctor refuses something, it answers { "issues": [...] }
 and the command exits 1.
