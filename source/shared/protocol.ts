@@ -45,7 +45,9 @@ export type _Message_Client_ =
   | _REVIEW_Message__Client_
   | _WATCH_Message__Client_
   | _ACTIVATE_Message__Client_
-  | _PARK_Message__Client_;
+  | _PARK_Message__Client_
+  | _COMPLETE_Message__Client_
+  | _CANCEL_Message__Client_;
 
 interface __BASE_Message__Client_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -100,6 +102,15 @@ export interface _PARK_Message__Client_ extends __BASE_Message__Client_<"park"> 
   task: _Id_Task_;
 }
 
+export interface _COMPLETE_Message__Client_ extends __BASE_Message__Client_<"complete"> {
+  task: _Id_Task_;
+}
+
+// asks why before a task's canceled
+export interface _CANCEL_Message__Client_ extends __BASE_Message__Client_<"cancel"> {
+  task: _Id_Task_;
+}
+
 const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kind", [
   v.strictObject({ kind: v.literal("accept") }),
   v.strictObject({ kind: v.literal("reject"), reason: v.string() }),
@@ -112,6 +123,8 @@ export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v
   v.strictObject({ kind: v.literal("watch") }),
   v.strictObject({ kind: v.literal("activate"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("park"), task: taskIdSchema }),
+  v.strictObject({ kind: v.literal("complete"), task: taskIdSchema }),
+  v.strictObject({ kind: v.literal("cancel"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("open"), file: v.string() }),
   v.strictObject({
     kind: v.literal("change"),

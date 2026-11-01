@@ -26,6 +26,7 @@ export type _Connect_Endpoint_ = (
 export interface _Request_Endpoint_ {
   method: string;
   path: string;
+  search: URLSearchParams;
   body: unknown;
 }
 
@@ -122,7 +123,7 @@ export function startEndpoint(
       respond(response, 401, { issues: ["unknown caller"] });
       return;
     }
-    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const { pathname: path, searchParams: search } = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && path === "/status") {
       respond(response, 200, { caller: caller.author });
       return;
@@ -133,7 +134,7 @@ export function startEndpoint(
       return;
     }
     try {
-      const answer = await serve(caller.author, { method: request.method ?? "GET", path, body });
+      const answer = await serve(caller.author, { method: request.method ?? "GET", path, search, body });
       respond(response, answer.status, answer.body);
     } catch (someError) {
       respond(response, 500, { issues: [`doctor failed: ${String(someError)}`] });

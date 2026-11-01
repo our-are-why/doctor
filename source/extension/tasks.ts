@@ -7,6 +7,8 @@ import type {
   _ACTIVATE_Transition__Task_,
   _ACTIVE_Task__Doctor_,
   _Author_Doctor_,
+  _CANCEL_Transition__Task_,
+  _COMPLETE_Transition__Task_,
   _Document_Doctor_,
   _DRAFT_Id__Node_,
   _DRAFT_Task__Doctor_,
@@ -133,7 +135,23 @@ const activate: _ACTIVATE_Transition__Task_ = (task, activated) => ({
   reviews: [],
 });
 
-const parkedReason: _Reason_Task_ = { kind: "stated", text: { text: "the task was parked", overlay: [] } };
+const stated = (text: string): _Reason_Task_ => ({ kind: "stated", text: { text, overlay: [] } });
+
+const isFinal = (proposal: _Proposal_Task_): proposal is _FINAL_Proposal__Task_ =>
+  proposal.state === "accepted" || proposal.state === "rejected" || proposal.state === "withdrawn";
+
+// a task's proposals as it ends or is set aside: what's still open withdrawn
+function closeProposals(
+  proposals: Array<_Proposal_Task_>,
+  withdrawn: _Stamp_Doctor_,
+  reason: _Reason_Task_,
+): Array<_FINAL_Proposal__Task_> {
+  return proposals.map((proposal) =>
+    isFinal(proposal)
+      ? proposal
+      : { state: "withdrawn", id: proposal.id, document: proposal.document, rounds: proposal.rounds, withdrawn, reason },
+  );
+}
 
 const park: _PARK_Transition__Task_ = (task, parked) => ({
   kind: task.kind,
@@ -147,19 +165,41 @@ const park: _PARK_Transition__Task_ = (task, parked) => ({
   activated: task.activated,
   applied: task.applied,
   reviews: task.reviews,
-  proposals: task.proposals.map((proposal): _FINAL_Proposal__Task_ =>
-    proposal.state === "proposed" || proposal.state === "revising"
-      ? {
-          state: "withdrawn",
-          id: proposal.id,
-          document: proposal.document,
-          rounds: proposal.rounds,
-          withdrawn: parked,
-          reason: parkedReason,
-        }
-      : proposal,
-  ),
+  proposals: closeProposals(task.proposals, parked, stated("the task was parked")),
   parked,
+});
+
+const complete: _COMPLETE_Transition__Task_ = (task, completed) => ({
+  kind: task.kind,
+  formatVersion: task.formatVersion,
+  state: "completed",
+  id: task.id,
+  created: task.created,
+  roles: task.roles,
+  reviewTiming: task.reviewTiming,
+  brief: task.brief,
+  activated: task.activated,
+  applied: task.applied,
+  reviews: task.reviews,
+  proposals: task.proposals,
+  completed,
+});
+
+const cancel: _CANCEL_Transition__Task_ = (task, canceled, reason) => ({
+  kind: task.kind,
+  formatVersion: task.formatVersion,
+  state: "canceled",
+  id: task.id,
+  created: task.created,
+  roles: task.roles,
+  reviewTiming: task.reviewTiming,
+  brief: task.brief,
+  activated: task.activated,
+  applied: task.applied,
+  reviews: task.reviews,
+  proposals: closeProposals(task.proposals, canceled, reason),
+  canceled,
+  reason,
 });
 
 const resume: _RESUME_Transition__Task_ = (task, activated) => ({
@@ -182,6 +222,15 @@ export async function activeTask(place: _Place_Tasks_): Promise<Array<_ACTIVE_Ta
   return (await listTasks(place)).filter(isActive);
 }
 
+// The agent's turn: the active task is being worked on, and nothing proposed
+// for it is waiting for review. It's the human's turn otherwise.
+export function agentsTurn(tasks: Array<_Task_Doctor_>): Array<_WORKING_Task__Doctor_> {
+  return tasks.filter(
+    (task): task is _WORKING_Task__Doctor_ =>
+      task.state === "working" && task.proposals.every((proposal) => proposal.state !== "proposed"),
+  );
+}
+
 export function parkTask(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
   return updateTask(place, id, async (task) => {
     if (!isActive(task)) return refuse(`task ${id} is ${task.state}, so there's nothing to park`);
@@ -199,6 +248,29 @@ async function parkOthers(place: _Place_Tasks_, id: _Id_Task_): Promise<Array<_I
     if (outcome.kind === "done") parked.push(outcome.value);
   }
   return parked;
+}
+
+// Ends a task as done. A proposal still waiting for review has to be decided
+// first; one the agent is revising is withdrawn.
+export function completeTask(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
+  return updateTask(place, id, async (task) => {
+    if (task.state === "parked") return done({ task: complete(task, stamp("human")), value: task.id });
+    if (!isActive(task)) return refuse(`task ${id} is ${task.state}, so it can't be completed`);
+    const waiting = task.proposals.filter((proposal) => proposal.state === "proposed").map((proposal) => proposal.id);
+    if (waiting.length > 0) {
+      return refuse(`proposal ${waiting.join(", ")} is still waiting for review: accept or reject it before completing the task`);
+    }
+    const completed = stamp("human");
+    const proposals = closeProposals(task.proposals, completed, stated("the task was completed"));
+    return done({ task: complete({ ...task, proposals }, completed), value: task.id });
+  });
+}
+
+export function cancelTask(place: _Place_Tasks_, id: _Id_Task_, reason: _Reason_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
+  return updateTask(place, id, async (task) => {
+    if (task.state !== "parked" && !isActive(task)) return refuse(`task ${id} is ${task.state}, so it can't be canceled`);
+    return done({ task: cancel(task, stamp("human"), reason), value: task.id });
+  });
 }
 
 export interface _Activated_Task_ {

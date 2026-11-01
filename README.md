@@ -7,7 +7,13 @@ are webviews, and the agent works in VS Code's own terminal.
 So far documents can be created and edited: "doctor: new document" makes
 one, any `*.doctor.json` opens in doctor's editor, a text editor like VS
 Code's own, and every save becomes a version in the document's history. A
-read-only reading view renders the same document. Notes and tasks come next.
+read-only reading view renders the same document.
+
+Select blocks and run "doctor: new task" to give the agent a task. What it
+proposes shows in the editor, to accept, reject or send back with feedback,
+and the dashboard lists the tasks. The agent works through the `doctor`
+command: tell it once to run `doctor wait` and take the step it's given.
+Notes come next.
 
 ## Develop
 
@@ -91,6 +97,12 @@ What doctor is built from, and why:
   Each kind of caller, the human or the agent, has its own token; every new
   terminal gets the agent's in `DOCTOR_TOKEN`, with the address in
   `DOCTOR_ENDPOINT`.
+- **The agent pulls.** doctor never types into the agent's terminal. The
+  agent runs `doctor wait`, which answers when it's the agent's turn, with
+  the task and the step to take next, so any agent that can run a command
+  can work with doctor. It's the agent's turn while the active task is being
+  worked on and nothing proposed for it waits for review; that's read from
+  the tasks as stored, so nothing is missed between waits.
 - **Text is characters with an overlay.** A text is a plain string, and its
   contrast and links are marks over ranges of it, counted in code points. An
   edit writes the characters and carries the marks across, or styles the

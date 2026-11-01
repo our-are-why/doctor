@@ -2,6 +2,13 @@ import { readFile } from "node:fs/promises";
 
 const usage = `doctor: the agent's side of doctor's tasks
 
+Working on doctor's tasks is a loop: run doctor wait, take the step its "next"
+gives you, and run doctor wait again.
+
+  doctor wait [--for <s>]  wait for your turn: a task to work on, or what you proposed
+                           reviewed. Answers as doctor task does, with "turn" and
+                           "next", the step to take. With --for, it gives up after that
+                           many seconds, answering { "turn": "human", ... }
   doctor task              the active task: its instruction, and for each document in
                            its scope the scoped nodes and the document's base version
   doctor document [<id>]   a whole document as JSON, with its base version; without an
@@ -40,20 +47,53 @@ Operations, applied in order:
             like "new-summary", which other operations can name too
 `;
 
-async function call(method: string, path: string, body: unknown): Promise<number> {
+interface _Answer_Cli_ {
+  status: number;
+  body: unknown;
+}
+
+const unanswered = (issue: string): _Answer_Cli_ => ({ status: 503, body: { issues: [issue] } });
+
+async function request(method: string, path: string, body: unknown): Promise<_Answer_Cli_> {
   const endpoint = process.env["DOCTOR_ENDPOINT"];
   const token = process.env["DOCTOR_TOKEN"];
   if (endpoint === undefined || token === undefined) {
-    console.log(JSON.stringify({ issues: ["DOCTOR_ENDPOINT isn't set: use a terminal VS Code opened after doctor started"] }));
-    return 1;
+    return unanswered("DOCTOR_ENDPOINT isn't set: use a terminal VS Code opened after doctor started");
   }
-  const response = await fetch(new URL(path, endpoint), {
-    method,
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  }).catch((someError: unknown) => new Response(JSON.stringify({ issues: [`doctor isn't answering: ${String(someError)}`] }), { status: 503 }));
-  console.log(JSON.stringify(await response.json(), null, 2));
-  return response.ok ? 0 : 1;
+  try {
+    const response = await fetch(new URL(path, endpoint), {
+      method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { status: response.status, body: await response.json() };
+  } catch (someError) {
+    return unanswered(
+      `doctor isn't answering at ${endpoint}: if VS Code was reloaded since this terminal opened, open a new one (${String(someError)})`,
+    );
+  }
+}
+
+function print(answer: _Answer_Cli_): number {
+  console.log(JSON.stringify(answer.body, null, 2));
+  return answer.status >= 200 && answer.status < 300 ? 0 : 1;
+}
+
+async function call(method: string, path: string, body: unknown): Promise<number> {
+  return print(await request(method, path, body));
+}
+
+const humansTurn = (body: unknown) => typeof body === "object" && body !== null && "turn" in body && body.turn === "human";
+
+// doctor's endpoint answers a wait within a minute, so this asks again until
+// it's the agent's turn, or until --for's seconds are up
+async function wait(seconds: Array<number>): Promise<number> {
+  const until = seconds.map((each) => Date.now() + each * 1000);
+  for (;;) {
+    const left = until.map((each) => Math.max(each - Date.now(), 0));
+    const answer = await request("GET", `wait${left.map((each) => `?for=${each}`).join("")}`, undefined);
+    if (!humansTurn(answer.body) || until.some((each) => Date.now() >= each)) return print(answer);
+  }
 }
 
 async function readInput(name: string): Promise<Array<unknown>> {
@@ -69,6 +109,16 @@ async function readInput(name: string): Promise<Array<unknown>> {
 async function run(args: Array<string>): Promise<number> {
   const [command, argument] = args;
   switch (command) {
+    case "wait": {
+      const [flag, value] = args.slice(1);
+      if (flag === undefined) return wait([]);
+      const seconds = Number(value);
+      if (flag !== "--for" || !Number.isFinite(seconds) || seconds <= 0) {
+        console.log(JSON.stringify({ issues: ["doctor wait takes --for <seconds>, a number above 0, or nothing"] }));
+        return 1;
+      }
+      return wait([seconds]);
+    }
     case "task":
       return call("GET", "task", undefined);
     case "document":

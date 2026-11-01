@@ -42,6 +42,7 @@ export function Dashboard({ config }: { config: _DASHBOARD_Config__Webview_ }) {
           const latest = task.brief.versions[task.brief.versions.length - 1] ?? task.brief.versions[0];
           const active = task.state === "working" || task.state === "reviewing";
           const resumable = task.state === "draft" || task.state === "parked";
+          const open = active || task.state === "parked";
           return (
             <li key={task.id} className={active ? styles.active : styles.task}>
               <div className={styles.line}>
@@ -55,6 +56,16 @@ export function Dashboard({ config }: { config: _DASHBOARD_Config__Webview_ }) {
                 {resumable ? (
                   <button className={styles.button} type="button" onClick={() => send({ kind: "activate", task: task.id })}>
                     Make active
+                  </button>
+                ) : null}
+                {open ? (
+                  <button className={styles.button} type="button" onClick={() => send({ kind: "complete", task: task.id })}>
+                    Complete
+                  </button>
+                ) : null}
+                {open ? (
+                  <button className={styles.button} type="button" onClick={() => send({ kind: "cancel", task: task.id })}>
+                    Cancel
                   </button>
                 ) : null}
               </div>

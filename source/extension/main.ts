@@ -2,7 +2,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import * as v from "valibot";
 import * as vscode from "vscode";
-import type { _Author_Doctor_, _Id_Document_, _Id_Task_, _Task_Doctor_ } from "../shared/domain.next.ts";
+import type { _Author_Doctor_, _Id_Document_, _Id_Task_, _Reason_Task_, _Task_Doctor_ } from "../shared/domain.next.ts";
 import { parse, parseOwn } from "../shared/parse.ts";
 import {
   endpointUrlSchema,
@@ -16,11 +16,14 @@ import { createDocument, makeChange } from "./changes.ts";
 import { registerDashboardSerializer, showDashboard } from "./dashboard.ts";
 import { documentViewType, registerDocumentEditor, textViewType } from "./documentEditor.ts";
 import { documentSuffix, newDocument, readDocument } from "./documents.ts";
-import { serveAgent } from "./agent.ts";
+import { presence, serveAgent, wake } from "./agent.ts";
 import { mintToken, startEndpoint, type _Connect_Endpoint_, type _Serve_Endpoint_ } from "./endpoint.ts";
 import {
   accept,
+  cancelTask,
+  completeTask,
   createTask,
+  agentsTurn,
   listTasks,
   makeActive,
   parkTask,
@@ -96,7 +99,26 @@ function openProposals(tasks: Array<_Task_Doctor_>, file: string): Array<_Open_P
   });
 }
 
-// tells every view what changed in the tasks
+const agentPrompt =
+  "Work on doctor's tasks: run `doctor help` once, then run `doctor wait`, do the step it gives you, and run `doctor wait` again.";
+
+// the agent's turn last told about, so a turn nobody's waiting for is told once
+let reminded = "";
+
+function remind(tasks: Array<_Task_Doctor_>): void {
+  const [task] = agentsTurn(tasks);
+  if (task === undefined) return;
+  const turn = [task.id, ...task.proposals.map((proposal) => `${proposal.id}:${proposal.state}:${proposal.rounds.length}`)].join(" ");
+  if (turn === reminded || presence() !== "away") return;
+  reminded = turn;
+  void vscode.window
+    .showInformationMessage(`doctor: task ${task.id} is the agent's turn, and no agent is waiting for it.`, "Copy what to tell your agent")
+    .then((picked) => {
+      if (picked !== undefined) void vscode.env.clipboard.writeText(agentPrompt);
+    });
+}
+
+// tells every view what changed in the tasks, and any agent waiting its turn
 async function announce(problems: Array<string>, to: Array<_Send_Session_>): Promise<void> {
   const [place] = tasksPlace();
   if (place === undefined) return;
@@ -107,6 +129,8 @@ async function announce(problems: Array<string>, to: Array<_Send_Session_>): Pro
       send({ kind: "proposals", file, open: openProposals(tasks, file), problems: to.includes(send) ? problems : [] });
     }
   }
+  wake();
+  remind(tasks);
 }
 
 const serve: _Serve_Endpoint_ = async (caller, request) => {
@@ -116,30 +140,6 @@ const serve: _Serve_Endpoint_ = async (caller, request) => {
   if (request.method === "POST") void announce([], []);
   return answer;
 };
-
-// The terminal the agent runs in: picked the first time a brief is sent, and
-// remembered until it closes.
-let agentTerminals: Array<vscode.Terminal> = [];
-
-async function agentTerminal(): Promise<Array<vscode.Terminal>> {
-  const known = agentTerminals.filter((terminal) => vscode.window.terminals.includes(terminal));
-  if (known.length > 0) return known;
-  if (vscode.window.terminals.length === 0) {
-    void vscode.window.showWarningMessage("doctor: open a terminal with the agent in it, and doctor will send it the task");
-    return [];
-  }
-  const picked = await vscode.window.showQuickPick(
-    vscode.window.terminals.map((terminal) => ({ label: terminal.name, terminal })),
-    { title: "doctor: which terminal is the agent in?", ignoreFocusOut: true },
-  );
-  agentTerminals = picked === undefined ? [] : [picked.terminal];
-  return agentTerminals;
-}
-
-// one line, so the agent's prompt takes it as a single message
-async function tellAgent(message: string): Promise<void> {
-  for (const terminal of await agentTerminal()) terminal.sendText(message.replace(/\s*\n\s*/g, " "), true);
-}
 
 async function makeTask(message: _TASK_Message__Client_, send: _Send_Session_): Promise<void> {
   const [place] = tasksPlace();
@@ -152,14 +152,10 @@ async function makeTask(message: _TASK_Message__Client_, send: _Send_Session_): 
   });
   if (instruction === undefined || instruction.trim() === "") return;
   const nodes = message.scope.length > 0 ? message.scope : read.value.content.children.map((block) => block.id);
-  const made = await createTask(
+  await createTask(
     place,
     { text: instruction.trim(), overlay: [] },
     nodes.map((node) => ({ document: read.value.id, node })),
-  );
-  const parked = made.parked.length > 0 ? ` (task ${made.parked.join(", ")} is parked)` : "";
-  await tellAgent(
-    `doctor: task ${made.task.id} is yours${parked}: ${instruction.trim()} — read it with \`doctor task\`; \`doctor help\` shows how to propose changes as JSON, and \`doctor submit\` hands the task back.`,
   );
   await announce([], [send]);
 }
@@ -168,22 +164,36 @@ async function activateTask(task: _Id_Task_, send: _Send_Session_): Promise<void
   const [place] = tasksPlace();
   if (place === undefined) return;
   const outcome = await makeActive(place, task);
-  if (outcome.kind === "refused") return announce(outcome.issues, [send]);
-  const latest = outcome.value.task.brief.versions[outcome.value.task.brief.versions.length - 1] ?? outcome.value.task.brief.versions[0];
-  const parked = outcome.value.parked.length > 0 ? ` (task ${outcome.value.parked.join(", ")} is parked)` : "";
-  await tellAgent(
-    `doctor: task ${task} is active again${parked}: ${latest.instruction.text} — \`doctor task\` shows where it stands; proposals that were waiting were withdrawn when it was parked.`,
-  );
-  return announce([], [send]);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
 }
 
 async function parkActive(task: _Id_Task_, send: _Send_Session_): Promise<void> {
   const [place] = tasksPlace();
   if (place === undefined) return;
   const outcome = await parkTask(place, task);
-  if (outcome.kind === "refused") return announce(outcome.issues, [send]);
-  await tellAgent(`doctor: task ${task} is parked; stop working on it until it's active again.`);
-  return announce([], [send]);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
+}
+
+async function finishTask(task: _Id_Task_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const outcome = await completeTask(place, task);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
+}
+
+async function dropTask(task: _Id_Task_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const written = await vscode.window.showInputBox({
+    title: `doctor: cancel task ${task}`,
+    prompt: "Why cancel it? Leave this empty to give no reason, or press Escape to keep the task.",
+    ignoreFocusOut: true,
+  });
+  if (written === undefined) return;
+  const reason: _Reason_Task_ =
+    written.trim() === "" ? { kind: "unstated" } : { kind: "stated", text: { text: written.trim(), overlay: [] } };
+  const outcome = await cancelTask(place, task, reason);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
 }
 
 async function reviewProposal(message: _REVIEW_Message__Client_, send: _Send_Session_): Promise<void> {
@@ -203,11 +213,7 @@ async function reviewProposal(message: _REVIEW_Message__Client_, send: _Send_Ses
     return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
   }
   const outcome = await requestChanges(place, message.task, message.proposal, { text: verdict.feedback, overlay: [] });
-  if (outcome.kind === "refused") return announce(outcome.issues, [send]);
-  await tellAgent(
-    `doctor: changes requested on proposal ${message.proposal}: ${verdict.feedback} — \`doctor task\` shows it, and your next \`doctor propose\` for that document revises it.`,
-  );
-  return announce([], [send]);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
 }
 
 // the doctor command, on every new terminal's path: VS Code's own Node
@@ -297,6 +303,12 @@ const connect: _Connect_Endpoint_ = (caller, send) => {
           return;
         case "park":
           if (caller === "human") void parkActive(message.task, send);
+          return;
+        case "complete":
+          if (caller === "human") void finishTask(message.task, send);
+          return;
+        case "cancel":
+          if (caller === "human") void dropTask(message.task, send);
           return;
       }
     },
