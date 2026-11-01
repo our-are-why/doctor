@@ -72,7 +72,8 @@ committed.
                         into changes (reconcile.ts)
     scripts/            the project's own tools: building and installing the
                         extension, makeCssTypes.ts
-    notes/              how types are built (type-construction.md)
+    notes/              how types are built (type-construction.md), and how
+                        tasks work, as a design (tasks.md)
     notes/experiments/  write-ups of experiments, like vscode-extension.md
     samples/            documents to try doctor on, like sample.doctor.json
 
