@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer } from "ws";
 import type { _Author_Doctor_ } from "../shared/domain.next.ts";
 import { parse, parseOwn } from "../shared/parse.ts";
@@ -112,10 +112,54 @@ function send(socket: { send: (data: string) => void }, message: _Message_Server
   socket.send(JSON.stringify(message));
 }
 
-export function startEndpoint(
+const taken = (someError: unknown) => someError instanceof Error && "code" in someError && someError.code === "EADDRINUSE";
+
+function listen(server: Server, port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const failed = (someError: Error) => {
+      server.off("listening", listening);
+      reject(someError);
+    };
+    const listening = () => {
+      server.off("error", failed);
+      const address = server.address();
+      if (address === null || typeof address === "string") reject(new Error("the endpoint isn't listening on a TCP port"));
+      else resolve(address.port);
+    };
+    server.once("error", failed);
+    server.once("listening", listening);
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+// how often, and how far apart, a port that's taken is tried again: a
+// reloaded window's endpoint may still be letting go of it
+const attempts = 10;
+const apart = 300;
+
+// the first of the ports that's free, tried a few times each, or else any
+async function listenOnAny(server: Server, ports: Array<number>): Promise<number> {
+  for (const port of ports) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await listen(server, port);
+      } catch (someError) {
+        if (!taken(someError)) throw someError;
+        server.close();
+        await new Promise((resolve) => setTimeout(resolve, apart));
+      }
+    }
+  }
+  return listen(server, 0);
+}
+
+// Starts on the first of ports that's free, or any free port, so the
+// endpoint can come back where terminals were told it is.
+export async function startEndpoint(
   tokens: _Tokens_Endpoint_,
   connect: _Connect_Endpoint_,
   serve: _Serve_Endpoint_,
+  ports: Array<number>,
 ): Promise<_Running_Endpoint_> {
   const server = createServer(async (request, response) => {
     const caller = identify(tokens, bearerOf(request));
@@ -168,22 +212,16 @@ export function startEndpoint(
     });
   });
 
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("the endpoint isn't listening on a TCP port"));
-        return;
-      }
-      resolve({
-        port: address.port,
-        close: () =>
-          new Promise((closed) => {
-            sockets.close();
-            server.close(() => closed());
-          }),
-      });
-    });
-  });
+  const port = await listenOnAny(server, ports);
+  return {
+    port,
+    // drops open requests too, an agent's wait among them, so the port is
+    // free again as soon as this closes
+    close: () =>
+      new Promise((closed) => {
+        sockets.close();
+        server.close(() => closed());
+        server.closeAllConnections();
+      }),
+  };
 }

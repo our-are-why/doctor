@@ -92,7 +92,9 @@ What doctor is built from, and why:
   everything around them; doctor adds a document editor (a custom editor for
   `*.doctor.json`) and a task dashboard (a webview panel).
 - **One endpoint.** The extension runs an HTTP and WebSocket server on
-  `127.0.0.1`, at a free port. Webviews reach it through code-server's proxy
+  `127.0.0.1`, at a free port that it keeps, with the agent's token, across
+  reloads of the window, so a terminal opened before one still reaches it;
+  the CLI waits out the reload itself. Webviews reach it through code-server's proxy
   (`vscode.env.asExternalUri`), and the agent's command reaches it directly.
   Each kind of caller, the human or the agent, has its own token; every new
   terminal gets the agent's in `DOCTOR_TOKEN`, with the address in

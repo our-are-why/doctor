@@ -54,25 +54,46 @@ interface _Answer_Cli_ {
   body: unknown;
 }
 
-const unanswered = (issue: string): _Answer_Cli_ => ({ status: 503, body: { issues: [issue] } });
+const unanswered = (status: number, issue: string): _Answer_Cli_ => ({ status, body: { issues: [issue] } });
+
+const outOfDate = "if VS Code was reloaded since this terminal opened and doctor moved, open a new terminal";
+
+// how long doctor is waited for when it can't be reached: long enough to
+// see a window reload through
+const patience = 15_000;
+const apart = 500;
+
+// A request is tried again only if that can't do it twice: one that only
+// reads, or one whose connection was refused before it was sent.
+const refused = (someError: unknown) =>
+  someError instanceof Error &&
+  someError.cause instanceof Error &&
+  "code" in someError.cause &&
+  someError.cause.code === "ECONNREFUSED";
 
 async function request(method: string, path: string, body: unknown): Promise<_Answer_Cli_> {
   const endpoint = process.env["DOCTOR_ENDPOINT"];
   const token = process.env["DOCTOR_TOKEN"];
   if (endpoint === undefined || token === undefined) {
-    return unanswered("DOCTOR_ENDPOINT isn't set: use a terminal VS Code opened after doctor started");
+    return unanswered(503, "DOCTOR_ENDPOINT isn't set: use a terminal VS Code opened after doctor started");
   }
-  try {
-    const response = await fetch(new URL(path, endpoint), {
-      method,
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    return { status: response.status, body: await response.json() };
-  } catch (someError) {
-    return unanswered(
-      `doctor isn't answering at ${endpoint}: if VS Code was reloaded since this terminal opened, open a new one (${String(someError)})`,
-    );
+  const until = Date.now() + patience;
+  for (;;) {
+    try {
+      const response = await fetch(new URL(path, endpoint), {
+        method,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      if (response.status === 401) return unanswered(401, `doctor doesn't know this terminal's token: ${outOfDate}`);
+      return { status: response.status, body: await response.json() };
+    } catch (someError) {
+      const again = method === "GET" || refused(someError);
+      if (!again || Date.now() >= until) {
+        return unanswered(503, `doctor isn't answering at ${endpoint}: ${outOfDate} (${String(someError)})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, apart));
+    }
   }
 }
 

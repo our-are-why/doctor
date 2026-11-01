@@ -6,11 +6,13 @@ import type { _Author_Doctor_, _Id_Document_, _Id_Task_, _Reason_Task_, _Task_Do
 import { parse, parseOwn } from "../shared/parse.ts";
 import {
   endpointUrlSchema,
+  tokenSchema,
   type _CHANGE_Message__Client_,
   type _Message_Server_,
   type _Open_Proposal_,
   type _REVIEW_Message__Client_,
   type _TASK_Message__Client_,
+  type _Token_Endpoint_,
 } from "../shared/protocol.ts";
 import { createDocument, makeChange } from "./changes.ts";
 import { registerDashboardSerializer, showDashboard } from "./dashboard.ts";
@@ -341,10 +343,27 @@ async function newDocumentCommand(): Promise<void> {
   await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(file), textViewType);
 }
 
+const portSchema = v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65_535));
+
+// The agent's token and the endpoint's port, kept with the workspace so a
+// reloaded window's endpoint comes back where its terminals were told it
+// is. The token's no more open there than in every terminal's environment.
+function agentToken(context: vscode.ExtensionContext): _Token_Endpoint_ {
+  const kept = parse(tokenSchema, context.workspaceState.get("doctor.agentToken"));
+  return kept.kind === "parsed" ? kept.value : mintToken();
+}
+
+function keptPorts(context: vscode.ExtensionContext): Array<number> {
+  const kept = parse(portSchema, context.workspaceState.get("doctor.port"));
+  return kept.kind === "parsed" ? [kept.value] : [];
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const tokens = { human: mintToken(), agent: mintToken() };
-  const running = await startEndpoint(tokens, connect, serve);
+  const tokens = { human: mintToken(), agent: agentToken(context) };
+  const running = await startEndpoint(tokens, connect, serve, keptPorts(context));
   context.subscriptions.push({ dispose: () => void running.close() });
+  await context.workspaceState.update("doctor.agentToken", tokens.agent);
+  await context.workspaceState.update("doctor.port", running.port);
 
   const local = `http://127.0.0.1:${running.port}/`;
   const external = await vscode.env.asExternalUri(vscode.Uri.parse(local));
