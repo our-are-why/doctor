@@ -1,7 +1,8 @@
 import type { _NonEmpty_ } from "./list.ts";
 
 // the part of the Standard Schema interface parsing uses, so any library
-// implementing the standard can stand behind it
+// implementing the standard can stand behind it; its optional path is the
+// standard's shape, not doctor's
 export interface _Schema_Parse_<__Value__> {
   readonly "~standard": {
     readonly validate: (
@@ -14,10 +15,16 @@ type _Outcome_Schema_<__Value__> = _SUCCESS_Outcome__Schema_<__Value__> | _FAILU
 
 interface _SUCCESS_Outcome__Schema_<__Value__> {
   readonly value: __Value__;
+  readonly issues?: undefined;
 }
 
 interface _FAILURE_Outcome__Schema_ {
-  readonly issues: ReadonlyArray<{ readonly message: string }>;
+  readonly issues: ReadonlyArray<_Issue_Schema_>;
+}
+
+interface _Issue_Schema_ {
+  readonly message: string;
+  readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }> | undefined;
 }
 
 export type _Result_Parse_<__Value__> = _PARSED_Result__Parse_<__Value__> | _REJECTED_Result__Parse_;
@@ -34,6 +41,13 @@ export interface _REJECTED_Result__Parse_ extends __BASE_Result__Parse_<"rejecte
   issues: _NonEmpty_<string>;
 }
 
+function describe(issue: _Issue_Schema_): string {
+  const path = (issue.path ?? [])
+    .map((segment) => String(typeof segment === "object" ? segment.key : segment))
+    .join(".");
+  return path === "" ? issue.message : `${path}: ${issue.message}`;
+}
+
 export function parse<__Value__>(
   schema: _Schema_Parse_<__Value__>,
   input: unknown,
@@ -42,10 +56,12 @@ export function parse<__Value__>(
   if (outcome instanceof Promise) {
     return { kind: "rejected", issues: ["the schema is asynchronous, and parsing is synchronous"] };
   }
-  if ("value" in outcome) {
+  // per the standard, an outcome is a failure exactly when it has issues; a
+  // failure may carry a value too
+  if (outcome.issues === undefined) {
     return { kind: "parsed", value: outcome.value };
   }
-  const [first, ...rest] = outcome.issues.map((issue) => issue.message);
+  const [first, ...rest] = outcome.issues.map(describe);
   return { kind: "rejected", issues: [first ?? "rejected without a reason", ...rest] };
 }
 

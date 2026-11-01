@@ -4,8 +4,9 @@ Reads, edits and annotates documents beside an agent such as Claude Code. A
 VS Code extension for code-server: its document editor and task dashboard
 are webviews, and the agent works in VS Code's own terminal.
 
-So far it's the extension's skeleton: the editor and the dashboard connect
-to the extension, and nothing else is built yet.
+So far documents can be created and read: "doctor: new document" makes one,
+and the editor renders any `*.doctor.json`, or says why it can't. Editing,
+notes and tasks come next.
 
 ## Develop
 
@@ -55,6 +56,7 @@ committed.
                         extension, makeCssTypes.ts
     notes/              how types are built (type-construction.md)
     notes/experiments/  write-ups of experiments, like vscode-extension.md
+    samples/            documents to try doctor on, like sample.doctor.json
 
 Every part is checked against `tsconfig.base.json`'s rules plus only what
 that part may use: the extension gets Node's and VS Code's APIs and no DOM,

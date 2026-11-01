@@ -16,6 +16,9 @@
         "priority": "default"
       }
     ],
-    "commands": [{ "command": "doctor.openDashboard", "title": "doctor: open the task dashboard" }]
+    "commands": [
+      { "command": "doctor.newDocument", "title": "doctor: new document" },
+      { "command": "doctor.openDashboard", "title": "doctor: open the task dashboard" }
+    ]
   }
 }

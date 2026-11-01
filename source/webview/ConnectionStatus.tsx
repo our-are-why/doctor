@@ -1,5 +1,5 @@
 import styles from "./styles/ConnectionStatus.module.css";
-import type { _Connection_Webview_ } from "./useConnection.ts";
+import type { _Connection_Webview_ } from "./useSocket.ts";
 
 function describe(connection: _Connection_Webview_): string {
   switch (connection.kind) {

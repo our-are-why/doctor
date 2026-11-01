@@ -2,8 +2,20 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer } from "ws";
 import type { _Author_Doctor_ } from "../shared/domain.ts";
-import { parseOwn } from "../shared/parse.ts";
-import { tokenSchema, type _Message_Server_, type _Token_Endpoint_ } from "../shared/protocol.ts";
+import { parse, parseOwn } from "../shared/parse.ts";
+import {
+  clientMessageSchema,
+  tokenSchema,
+  type _Message_Client_,
+  type _Message_Server_,
+  type _Token_Endpoint_,
+} from "../shared/protocol.ts";
+
+export type _Handler_Endpoint_ = (
+  caller: _Author_Doctor_,
+  message: _Message_Client_,
+  reply: (message: _Message_Server_) => void,
+) => void;
 
 export interface _Tokens_Endpoint_ {
   human: _Token_Endpoint_;
@@ -56,7 +68,10 @@ function send(socket: { send: (data: string) => void }, message: _Message_Server
   socket.send(JSON.stringify(message));
 }
 
-export function startEndpoint(tokens: _Tokens_Endpoint_): Promise<_Running_Endpoint_> {
+export function startEndpoint(
+  tokens: _Tokens_Endpoint_,
+  handle: _Handler_Endpoint_,
+): Promise<_Running_Endpoint_> {
   const server = createServer((request, response) => {
     const caller = identify(tokens, bearerOf(request));
     if (caller.kind === "unknown") {
@@ -79,7 +94,19 @@ export function startEndpoint(tokens: _Tokens_Endpoint_): Promise<_Running_Endpo
       return;
     }
     sockets.handleUpgrade(request, socket, head, (client) => {
-      send(client, { kind: "welcome", caller: caller.author });
+      const reply = (message: _Message_Server_) => send(client, message);
+      client.on("message", (data, isBinary) => {
+        if (isBinary || !Buffer.isBuffer(data)) return;
+        let raw: unknown;
+        try {
+          raw = JSON.parse(data.toString("utf8"));
+        } catch {
+          return;
+        }
+        const result = parse(clientMessageSchema, raw);
+        if (result.kind === "parsed") handle(caller.author, result.value, reply);
+      });
+      reply({ kind: "welcome", caller: caller.author });
     });
   });
 

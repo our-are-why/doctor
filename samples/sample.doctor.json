@@ -1,0 +1,101 @@
+{
+  "kind": "document",
+  "formatVersion": 1,
+  "id": "d0c00000a1",
+  "revision": 1,
+  "content": {
+    "title": [{ "kind": "run", "text": "A sample document", "contrast": [] }],
+    "children": [
+      {
+        "kind": "paragraph",
+        "id": "p000000001",
+        "text": [
+          { "kind": "run", "text": "Plain text, ", "contrast": [] },
+          { "kind": "run", "text": "bold", "contrast": ["bold"] },
+          { "kind": "run", "text": ", ", "contrast": [] },
+          { "kind": "run", "text": "italic", "contrast": ["italic"] },
+          { "kind": "run", "text": ", ", "contrast": [] },
+          { "kind": "run", "text": "both", "contrast": ["italic", "bold"] },
+          { "kind": "run", "text": ", ", "contrast": [] },
+          { "kind": "run", "text": "monospace", "contrast": ["monospace"] },
+          { "kind": "run", "text": ", ", "contrast": [] },
+          { "kind": "run", "text": "highlighted", "contrast": ["highlighted"] },
+          { "kind": "run", "text": ", ", "contrast": [] },
+          { "kind": "run", "text": "struck", "contrast": ["struck"] },
+          { "kind": "run", "text": " and a ", "contrast": [] },
+          {
+            "kind": "link",
+            "label": [
+              { "kind": "run", "text": "link with ", "contrast": [] },
+              { "kind": "run", "text": "bold", "contrast": ["bold"] },
+              { "kind": "run", "text": " inside", "contrast": [] }
+            ],
+            "target": { "kind": "external", "url": "https://example.com" }
+          },
+          { "kind": "run", "text": ".", "contrast": [] }
+        ]
+      },
+      {
+        "kind": "section",
+        "id": "s000000001",
+        "heading": [{ "kind": "run", "text": "A section", "contrast": [] }],
+        "children": [
+          {
+            "kind": "list",
+            "id": "l000000001",
+            "order": "unordered",
+            "children": [
+              { "kind": "listItem", "id": "i000000001", "text": [{ "kind": "run", "text": "an item", "contrast": [] }], "children": [] },
+              {
+                "kind": "listItem",
+                "id": "i000000002",
+                "text": [{ "kind": "run", "text": "an item with a sub-list", "contrast": [] }],
+                "children": [
+                  {
+                    "kind": "list",
+                    "id": "l000000002",
+                    "order": "ordered",
+                    "children": [
+                      { "kind": "listItem", "id": "i000000003", "text": [{ "kind": "run", "text": "first", "contrast": [] }], "children": [] },
+                      { "kind": "listItem", "id": "i000000004", "text": [{ "kind": "run", "text": "second", "contrast": [] }], "children": [] }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "section",
+            "id": "s000000002",
+            "heading": [{ "kind": "run", "text": "A nested section", "contrast": [] }],
+            "children": [
+              {
+                "kind": "code",
+                "id": "c000000001",
+                "language": { "kind": "stated", "name": "typescript" },
+                "code": "const greeting = \"hello\";\nconsole.log(greeting);"
+              },
+              {
+                "kind": "quote",
+                "id": "q000000001",
+                "children": [
+                  { "kind": "paragraph", "id": "p000000002", "text": [{ "kind": "run", "text": "A quoted paragraph.", "contrast": ["italic"] }] }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "notes": [
+    {
+      "kind": "node",
+      "id": "n000000001",
+      "body": [{ "kind": "run", "text": "A note on the section.", "contrast": [] }],
+      "written": { "by": "human", "at": "2026-11-01T00:00:00.000Z" },
+      "node": "s000000001",
+      "confirmedAt": 1
+    }
+  ]
+}
