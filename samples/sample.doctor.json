@@ -88,12 +88,13 @@
               {
                 "kind": "quote",
                 "id": "q000000001",
+                "reference": { "text": "unknown", "overlay": [] },
                 "children": [
                   {
                     "kind": "paragraph",
                     "id": "p000000002",
                     "text": "A quoted paragraph.",
-                    "overlay": [{ "kind": "contrast", "contrast": "italic", "from": 0, "to": 19 }]
+                    "overlay": []
                   }
                 ]
               }

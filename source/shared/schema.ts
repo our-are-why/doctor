@@ -137,6 +137,9 @@ interface _Schemas_Node_<__Id__> {
   node: v.GenericSchema<unknown, _Node_Document_<__Id__>>;
 }
 
+// quotes written before they had references have none
+const referenceSchema = v.optional(textSchema, (): _Text_Doctor_ => ({ text: "", overlay: [] }));
+
 // Nodes whose ids are what idSchema reads: a document's, or the new ones a
 // proposal makes. Each kind's schema is shared by blocks and nodes, so a
 // node that doesn't fit is reported by what's wrong in its kind.
@@ -152,7 +155,12 @@ function nodeSchemas<__Id__>(idSchema: v.GenericSchema<unknown, __Id__>): _Schem
     children: v.tupleWithRest([items], items),
   });
   const code = v.strictObject({ kind: v.literal("code"), id: idSchema, language: languageSchema, code: v.string() });
-  const quote = v.strictObject({ kind: v.literal("quote"), id: idSchema, children: v.tupleWithRest([blocks], blocks) });
+  const quote = v.strictObject({
+    kind: v.literal("quote"),
+    id: idSchema,
+    reference: referenceSchema,
+    children: v.tupleWithRest([blocks], blocks),
+  });
   const listItem = v.strictObject({
     kind: v.literal("listItem"),
     id: idSchema,
@@ -302,7 +310,7 @@ const contentSchema: v.GenericSchema<unknown, _Content_Node_> = v.variant("kind"
   v.strictObject({ kind: v.literal("list"), order: orderSchema }),
   v.strictObject({ kind: v.literal("listItem"), text: v.string(), overlay: overlaySchema }),
   v.strictObject({ kind: v.literal("code"), language: languageSchema, code: v.string() }),
-  v.strictObject({ kind: v.literal("quote") }),
+  v.strictObject({ kind: v.literal("quote"), reference: referenceSchema }),
 ]);
 
 export const storeObjectSchema: v.GenericSchema<unknown, _Object_Store_> = v.variant("kind", [

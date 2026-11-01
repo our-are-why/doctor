@@ -61,7 +61,7 @@ function contentOf(node: _Node_Document_): _Content_Node_ {
     case "code":
       return { kind: "code", language: node.language, code: node.code };
     case "quote":
-      return { kind: "quote" };
+      return { kind: "quote", reference: orderedText(node.reference) };
   }
 }
 

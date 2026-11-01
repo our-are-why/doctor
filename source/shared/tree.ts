@@ -46,17 +46,19 @@ export function idsWithin(node: _Node_Document_): Array<_Id_Node_> {
   return nodesWithin(node).map((each) => each.id);
 }
 
-// the text a node holds: a paragraph's or an item's own, a section's heading
+// the text a node holds: a paragraph's or an item's own, a section's
+// heading, a quote's reference
 export function textOfNode(node: _Node_Document_): Array<_Text_Doctor_> {
   switch (node.kind) {
     case "section":
       return [node.heading];
+    case "quote":
+      return [node.reference];
     case "paragraph":
     case "listItem":
       return [node];
     case "list":
     case "code":
-    case "quote":
       return [];
   }
 }

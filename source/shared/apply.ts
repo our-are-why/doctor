@@ -113,13 +113,14 @@ function withText(node: _Node_Document_, text: _Text_Doctor_): _Step_Apply_<_Nod
   switch (node.kind) {
     case "section":
       return done({ ...node, heading: text });
+    case "quote":
+      return done({ ...node, reference: text });
     case "paragraph":
       return done({ ...node, text: text.text, overlay: text.overlay });
     case "listItem":
       return done({ ...node, text: text.text, overlay: text.overlay });
     case "list":
     case "code":
-    case "quote":
       return refuse(`a ${kindNames[node.kind]} holds no text`);
   }
 }

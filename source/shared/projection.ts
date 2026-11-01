@@ -16,9 +16,9 @@ import { indexNodes, textOfNode } from "./tree.ts";
 
 // The document as lines of text: the title first, as #0, then a line per
 // block. Sections are headings numbered by depth, #1, #2 and so on; items
-// are - or a number, indented two spaces per level
-// and a number when the list is ordered; quotes are >, a > per level; code
-// sits between ``` fences. Blank lines only separate.
+// are - or a number, indented two spaces per level; quotes are >, a > per
+// level, closed by their reference as -- when they have one; code sits
+// between ``` fences. Blank lines only separate.
 
 // where a text's content begins on its line, in UTF-16 units
 export interface _Place_Projection_ {
@@ -47,7 +47,9 @@ export interface _Reader_Projection_ {
 }
 
 // a paragraph whose words would read as a mark starts with a backslash
-export const startsBlock = (content: string) => /^(?:[#`>\\]| *(?:-|\d+\.) )/.test(content);
+export const startsBlock = (content: string) => /^(?:[#`>\\]|--(?: |$)| *(?:-|\d+\.) )/.test(content);
+
+const referencePattern = /^--(?: (.*))?$/;
 
 export function project(document: _Document_Doctor_): _Projection_ {
   const lines: Array<string> = [];
@@ -106,8 +108,10 @@ export function project(document: _Document_Doctor_): _Projection_ {
           code(block, quote);
           break;
         case "quote": {
-          const marks = quote.trimEnd();
-          blocks(block.children, 1, `${marks}> `);
+          const marks = `${quote.trimEnd()}> `;
+          blocks(block.children, 1, marks);
+          const written = content(block.reference);
+          if (written !== "") holding(block.id, `${marks}-- ${written.startsWith("\\") ? "\\" : ""}`, written);
           break;
         }
       }
@@ -197,19 +201,43 @@ export function parseProjection(
         index += 1;
         continue;
       }
+      // A quote's lines, one level of > off each, up to its reference, which
+      // closes it: a -- line at its own level, outside any code in it.
       if (row.text.startsWith(">")) {
         const quoted: Array<_Row_Projection_> = [];
-        while (rows[index]?.text.startsWith(">")) {
+        const referenced: Array<_Row_Projection_> = [];
+        let fenced: "outside" | "inside" = "outside";
+        while (referenced.length === 0 && rows[index]?.text.startsWith(">")) {
           const each = rows[index];
           if (each === undefined) break;
-          quoted.push({ ...each, text: each.text.replace(/^> ?/, "") });
+          const inner = { ...each, text: each.text.replace(/^> ?/, "") };
           index += 1;
+          if (fenced === "outside" && referencePattern.test(inner.text)) {
+            referenced.push(inner);
+            continue;
+          }
+          if (fenced === "outside" ? inner.text.startsWith("```") : inner.text === "```") {
+            fenced = fenced === "outside" ? "inside" : "outside";
+          }
+          quoted.push(inner);
         }
         const [first, ...rest] = parseBlocks(quoted);
-        if (first !== undefined) {
-          const children: _NonEmpty_<_Block_Document_> = [first, ...rest];
-          attach({ kind: "quote", id: reader.container("quote", children.map((child) => child.id)), children });
+        const [reference] = referenced;
+        if (first === undefined) {
+          if (reference !== undefined) {
+            problems.push(`line ${reference.number}: a quote's reference closes it, so it comes after what's quoted`);
+          }
+          continue;
         }
+        const children: _NonEmpty_<_Block_Document_> = [first, ...rest];
+        if (reference === undefined) {
+          const id = reader.container("quote", children.map((child) => child.id));
+          attach({ kind: "quote", id, reference: { text: "", overlay: [] }, children });
+          continue;
+        }
+        const id = idOf(reference);
+        const written = unescape(referencePattern.exec(reference.text)?.[1] ?? "");
+        attach({ kind: "quote", id, reference: read({ kind: "node", node: id }, written, reference.number), children });
         continue;
       }
       if (row.text.startsWith("```")) {
@@ -313,6 +341,7 @@ export function readerFor(document: _Document_Doctor_, fresh: () => _Id_Node_): 
 export function contentStart(line: string): number {
   const quote = /^(?:>+ )?/.exec(line)?.[0] ?? "";
   const rest = line.slice(quote.length);
-  const mark = /^(?:#\d+(?: |$)| *(?:-|\d+\.) )?/.exec(rest)?.[0] ?? "";
+  const marks = quote === "" ? /^(?:#\d+(?: |$)| *(?:-|\d+\.) )?/ : /^(?:--(?: |$)|#\d+(?: |$)| *(?:-|\d+\.) )?/;
+  const mark = marks.exec(rest)?.[0] ?? "";
   return quote.length + mark.length + (rest.slice(mark.length).startsWith("\\") ? 1 : 0);
 }

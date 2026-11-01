@@ -131,7 +131,12 @@ export interface _CODE_Content__Node_ extends __BASE_Content__Node_<"code"> {
   code: string;
 }
 
-export interface _QUOTE_Content__Node_ extends __BASE_Content__Node_<"quote"> {}
+// where a quote's words come from: a person, a source, a link to it, or
+// that it's unknown, as text a quote holds as a section holds its heading;
+// empty when nothing's said
+export interface _QUOTE_Content__Node_ extends __BASE_Content__Node_<"quote"> {
+  reference: _Text_Doctor_;
+}
 
 interface __Identity_Node_<__Id__> {
   id: __Id__;

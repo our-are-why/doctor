@@ -35,7 +35,9 @@ Operations, applied in order:
   { "kind": "move", "node": <id>, "to": <position> }
 
   holder    { "kind": "title" } or { "kind": "node", "node": <id> }, a paragraph,
-            a list item or a section, whose heading is its text
+            a list item, a section, whose heading is its text, or a quote,
+            whose reference is its text: where its words come from, empty
+            when that isn't said
   mark      { "kind": "contrast", "contrast": "bold" | "italic" | "monospace" |
             "highlighted" | "struck", "from": <n>, "to": <n> } or
             { "kind": "link", "target": <target>, "from": <n>, "to": <n> },

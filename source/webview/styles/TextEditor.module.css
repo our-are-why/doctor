@@ -69,12 +69,14 @@
   letter-spacing: -1ch;
 }
 
-:global(.monaco-editor) .quoteMark {
-  color: transparent;
-}
-
+/* a quote's bar, in the margin lane just left of the text */
 :global(.monaco-editor) .quote {
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--vscode-editor-foreground) 35%, transparent);
+  background: linear-gradient(
+    to right,
+    transparent 3px,
+    color-mix(in srgb, var(--vscode-editor-foreground) 35%, transparent) 3px 5px,
+    transparent 5px
+  );
 }
 
 /* a code block, fences and all, on a neutral band a little above the

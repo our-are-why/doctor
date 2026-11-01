@@ -67,6 +67,11 @@ function BlockView({ block, depth }: { block: _Block_Document_; depth: number })
       return (
         <blockquote className={styles.quote}>
           <Blocks blocks={block.children} depth={depth} />
+          {block.reference.text === "" ? null : (
+            <footer className={styles.reference}>
+              — <TextView text={block.reference} />
+            </footer>
+          )}
         </blockquote>
       );
   }

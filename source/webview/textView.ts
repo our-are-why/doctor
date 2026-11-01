@@ -10,6 +10,7 @@ import type {
   _LINK_Mark__Text_,
   _Node_Document_,
   _Operation_Change_,
+  _Parent_Position_,
   _Position_Operation_,
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
@@ -97,8 +98,9 @@ function applyTheme(): void {
 const languages = new Set<string>();
 
 // Enter carries an item's marker, or a quote's, on to the next line, which
-// keeps the item's indentation; a code block's lines are tokenized in the
-// language its fence names
+// keeps the item's indentation, except past a quote's reference, which
+// closed it; a code block's lines are tokenized in the language its fence
+// names
 function registerLanguages(): void {
   if (languages.size > 0) return;
   const carry = (pattern: string, mark: string) => ({
@@ -108,6 +110,7 @@ function registerLanguages(): void {
   const onEnterRules = [
     carry(" *- ", "- "),
     carry(" *\\d+\\. ", "1. "),
+    ...[6, 5, 4, 3, 2, 1].map((depth) => carry(`>{${depth}} --(?: |$)`, depth > 1 ? `${">".repeat(depth - 1)} ` : "")),
     ...[6, 5, 4, 3, 2, 1].map((depth) => carry(`>{${depth}} `, `${">".repeat(depth)} `)),
   ];
   monaco.languages.register({ id: "doctor" });
@@ -149,17 +152,20 @@ function markPieces(content: string): Array<_Piece_Mark_> {
   const piece = (from: number, to: number, className: string, spacing: _Piece_Mark_["spacing"]) => {
     if (to > from) pieces.push({ from, to, className, spacing });
   };
-  const quote = /^(>+) /.exec(content);
+  const quote = /^(>+)(?: |$)/.exec(content);
   let at = 0;
   if (quote !== null) {
-    const marks = quote[1]?.length ?? 0;
-    piece(0, marks, styles.quoteMark, "keeps");
-    at = marks + 1;
+    piece(0, quote[0].length, styles.collapse, "changes");
+    at = quote[0].length;
   }
   const rest = content.slice(at);
+  const reference = quote === null ? null : /^--(?= |$)/.exec(rest);
   const heading = /^#\d+(?= |$)/.exec(rest);
   const item = /^( *)(-|\d+\.) /.exec(rest);
-  if (heading !== null) {
+  if (reference !== null) {
+    piece(at, at + 2, styles.mark, "keeps");
+    at += rest.charAt(2) === " " ? 3 : 2;
+  } else if (heading !== null) {
     piece(at, at + heading[0].length, styles.badge, "keeps");
     at += heading[0].length + (rest.charAt(heading[0].length) === " " ? 1 : 0);
   } else if (item !== null) {
@@ -309,6 +315,16 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     };
     const whole = (line: number, className: string) =>
       decorations.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className } });
+    const margin = (line: number, className: string) =>
+      decorations.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, linesDecorationsClassName: className } });
+    const collapse = (line: number, to: number) => {
+      if (to > 0) {
+        decorations.push({
+          range: new monaco.Range(line, 1, line, to + 1),
+          options: { inlineClassName: styles.collapse, inlineClassNameAffectsLetterSpacing: true },
+        });
+      }
+    };
     const selections = editor.getSelections() ?? [];
     // a line's marks show as they're written while the caret is in them
     const marks = (line: number, content: string, start: number) => {
@@ -327,23 +343,29 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     let code: "outside" | "inside" = "outside";
     model.getLinesContent().forEach((content, at) => {
       const line = at + 1;
-      const quote = /^(?:>+ )?/.exec(content)?.[0] ?? "";
+      // A quote's lines, the blank ones between its blocks and its code's
+      // too, carry its bar in the margin, where wrapped rows can't run over
+      // it, and its >s take no room, so its text starts where any other
+      // does. Code's >s are hidden here, the rest's with the other marks.
+      const quote = /^(?:>+(?: |$))?/.exec(content)?.[0] ?? "";
+      if (quote.length > 0) margin(line, styles.quote);
       if (code === "inside") {
         const closing = content.slice(quote.length) === "```";
         whole(line, closing ? styles.codeEnd : styles.code);
+        collapse(line, quote.length);
         if (closing) {
-          inline(line, 0, content.length, styles.fence);
+          inline(line, quote.length, content.length, styles.fence);
           code = "outside";
         }
         return;
       }
       const [owner] = owners[at] ?? [];
       const node = owner === undefined ? undefined : index.get(owner)?.node;
-      if (quote.length > 0) whole(line, styles.quote);
       if (node?.kind === "code") {
         whole(line, styles.codeStart);
         const fence = quote.length + 3;
-        inline(line, 0, fence, styles.fence);
+        collapse(line, quote.length);
+        inline(line, quote.length, fence, styles.fence);
         inline(line, fence, content.length, styles.language);
         code = "inside";
         return;
@@ -507,13 +529,26 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
       }
       return last;
     };
+    // a quote's >s, one for it and one for each quote it's in
+    const quoteMarks = (node: _Id_Node_): string => {
+      let depth = 0;
+      let at: _Parent_Position_ = { kind: "node", node };
+      while (at.kind === "node") {
+        const entry = index.get(at.node);
+        if (entry === undefined) break;
+        if (entry.node.kind === "quote") depth += 1;
+        at = entry.parent;
+      }
+      return `${">".repeat(depth)} `;
+    };
     const placeAfter = (at: _Position_Operation_, fallback: number): number => {
       if (at.kind === "after") {
         const line = startOf(at.sibling);
         return line === 0 ? fallback : endOf(at.sibling, line);
       }
       if (at.parent.kind === "body") return 1;
-      const own = lineOf(at.parent.node);
+      // a quote's own line is its reference, which comes last
+      const own = index.get(at.parent.node)?.node.kind === "quote" ? 0 : lineOf(at.parent.node);
       if (own > 0) return own;
       const first = startOf(at.parent.node);
       return first === 0 ? fallback : first - 1;
@@ -595,13 +630,26 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
         switch (operation.kind) {
           case "write":
           case "style": {
-            const line = operation.holder.kind === "title" ? 1 : lineOf(operation.holder.node);
-            if (line === 0) break;
+            const { holder } = operation;
+            const line = holder.kind === "title" ? 1 : lineOf(holder.node);
+            const quoted = holder.kind === "node" && index.get(holder.node)?.node.kind === "quote" ? [holder.node] : [];
+            const [quote] = quoted;
+            if (line === 0) {
+              // a reference given to a quote that had none: its new last line
+              const first = quote === undefined ? 0 : startOf(quote);
+              if (quote === undefined || first === 0 || operation.kind !== "write" || operation.text === "") break;
+              const end = endOf(quote, first);
+              add(end, [`${quoteMarks(quote)}-- ${operation.text}`]);
+              last = end;
+              break;
+            }
             const content = model.getLineContent(line);
             const start = contentStart(content);
             if (operation.kind === "write") strike(line, line, start);
             touched.push(line);
-            add(line, [operation.kind === "write" ? `${content.slice(0, start)}${operation.text}` : `${content}  (restyled)`]);
+            if (quote === undefined || operation.kind !== "write" || operation.text !== "") {
+              add(line, [operation.kind === "write" ? `${content.slice(0, start)}${operation.text}` : `${content}  (restyled)`]);
+            }
             last = line;
             break;
           }
@@ -819,8 +867,8 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   };
 
   // Backspace at the start of a block's words takes its mark away, a
-  // heading's or an item's, then a quote's level; a paragraph's words join
-  // onto the block before it. The title keeps its #0.
+  // heading's, an item's or a quote's reference's, then a quote's level; a
+  // paragraph's words join onto the block before it. The title keeps its #0.
   const joinPrevious = () => {
     const position = editor.getPosition();
     if (position === null || position.lineNumber === 1) return;
@@ -828,7 +876,8 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     const content = model.getLineContent(line);
     const start = contentStart(content);
     const quote = /^(?:>+ )?/.exec(content)?.[0] ?? "";
-    const mark = /^(?:#\d+(?: |$)| *(?:-|\d+\.) )/.exec(content.slice(quote.length))?.[0] ?? "";
+    const marks = quote === "" ? /^(?:#\d+(?: |$)| *(?:-|\d+\.) )/ : /^(?:--(?: |$)|#\d+(?: |$)| *(?:-|\d+\.) )/;
+    const mark = marks.exec(content.slice(quote.length))?.[0] ?? "";
     if (mark.length > 0) {
       const escape = startsBlock(content.slice(start)) ? "\\" : "";
       const column = quote.length + 1;

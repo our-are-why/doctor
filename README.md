@@ -109,8 +109,9 @@ What doctor is built from, and why:
   overlay.
 - **The editor is Monaco, VS Code's editor.** It shows the document as
   lines: `#0` and the title first, a heading as `#n` numbered by depth,
-  items as `-` or a number indented two spaces per level, quotes as `>`,
-  code between ``` fences. Marks are real text, drawn quietly; contrast is
+  items as `-` or a number indented two spaces per level, quotes as `>`
+  closed by `-- ` and where their words come from when that's said, code
+  between ``` fences. Marks are real text, drawn quietly; contrast is
   never written, only shown, and set with shortcuts. Each edit is read back
   into the document and turned into operations, keeping every node's id.
 - **Versions, not revisions.** A version is the hash of a document's
