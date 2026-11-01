@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { _Document_Doctor_ } from "../shared/domain.next.ts";
-import { mintId } from "../shared/id.ts";
+import type { _Document_Doctor_, _Operation_Change_ } from "../shared/domain.next.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
-import type { _DOCUMENT_Config__Webview_ } from "../shared/protocol.ts";
-import { nodeIdSchema } from "../shared/schema.ts";
-import { backspace, recode, retext, split, type _Action_Editor_, type _Focus_Editor_ } from "./actions.ts";
-import type { _Editing_View_ } from "./editing.ts";
+import type { _Token_Endpoint_, _Url_Endpoint_ } from "../shared/protocol.ts";
 import {
   confirmed,
   opened,
@@ -36,11 +32,17 @@ export interface _UNREADABLE_Load__Editor_ extends __BASE_Load__Editor_<"unreada
   issues: _NonEmpty_<string>;
 }
 
-export interface _Editor_Webview_ {
+export type _Urgency_Session_ = "now" | "soon";
+
+export interface _Session_Webview_ {
   load: _Load_Editor_;
   problems: Array<string>;
   connection: _Connection_Webview_;
-  editing: _Editing_View_;
+  // counts the documents that came from somewhere other than this view's
+  // own edits: the first one opened, others' changes, a refusal's rebase
+  arrivals: number;
+  perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>, urgency: _Urgency_Session_) => void;
+  leave: () => void;
 }
 
 type _Due_Editor_ = "waiting" | "due";
@@ -54,13 +56,13 @@ const editingLoad = (session: _Session_Editor_): _EDITING_Load__Editor_ => ({
   document: shown(session),
 });
 
-const mintNodeId = () => mintId(nodeIdSchema, crypto.getRandomValues(new Uint8Array(10)));
-
-export function useEditing(config: _DOCUMENT_Config__Webview_): _Editor_Webview_ {
+// one document's edits: shown at once, sent after a pause, one change at a
+// time, rebased when the server refuses one
+export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token_Endpoint_): _Session_Webview_ {
   const [load, setLoadState] = useState<_Load_Editor_>({ kind: "loading" });
   const [problems, setProblems] = useState<Array<string>>([]);
-  const [focus, setFocus] = useState<_Focus_Editor_>({ kind: "keep" });
   const [due, setDue] = useState<_Due_Editor_>("waiting");
+  const [arrivals, setArrivals] = useState(0);
   const timer = useRef(0);
 
   // what the handlers read, kept current as soon as it changes rather than
@@ -70,19 +72,23 @@ export function useEditing(config: _DOCUMENT_Config__Webview_): _Editor_Webview_
     loadRef.current = next;
     setLoadState(next);
   };
+  const arrived = (next: _Load_Editor_) => {
+    setLoad(next);
+    setArrivals((count) => count + 1);
+  };
 
   const rebased = ({ session, problems }: _Rebased_Session_) => {
-    setLoad(editingLoad(session));
+    arrived(editingLoad(session));
     if (problems.length > 0) setProblems(problems);
     setDue("due");
   };
 
-  const { connection, send } = useSocket(config.endpoint, config.token, (message) => {
-    if (message.kind === "welcome" || message.file !== config.file) return;
+  const { connection, send } = useSocket(endpoint, token, (message) => {
+    if (message.kind === "welcome" || message.file !== file) return;
     const current = loadRef.current;
     switch (message.kind) {
       case "opened":
-        setLoad(editingLoad(opened(message.document)));
+        arrived(editingLoad(opened(message.document)));
         return;
       case "unreadable":
         setLoad({ kind: "unreadable", issues: message.issues });
@@ -91,7 +97,7 @@ export function useEditing(config: _DOCUMENT_Config__Webview_): _Editor_Webview_
         if (current.kind === "editing") setLoad(editingLoad(confirmed(current.session, message.document)));
         return;
       case "updated":
-        if (current.kind === "editing") setLoad(editingLoad(updated(current.session, message.document)));
+        if (current.kind === "editing") arrived(editingLoad(updated(current.session, message.document)));
         return;
       case "refused":
         if (current.kind === "editing") rebased(refused(current.session, message.issues));
@@ -100,8 +106,8 @@ export function useEditing(config: _DOCUMENT_Config__Webview_): _Editor_Webview_
   });
 
   useEffect(() => {
-    if (connection.kind === "open") send({ kind: "open", file: config.file });
-  }, [connection.kind, config.file, send]);
+    if (connection.kind === "open") send({ kind: "open", file });
+  }, [connection.kind, file, send]);
 
   useEffect(() => {
     if (due !== "due" || load.kind !== "editing" || connection.kind !== "open") return;
@@ -110,40 +116,31 @@ export function useEditing(config: _DOCUMENT_Config__Webview_): _Editor_Webview_
     const [first, ...rest] = session.unsent;
     setDue("waiting");
     if (first === undefined) return;
-    send({ kind: "change", file: config.file, operations: [first, ...rest] });
+    send({ kind: "change", file, operations: [first, ...rest] });
     setLoad(editingLoad(take(session)));
   }, [due, load, connection.kind]);
 
-  const perform = (act: (document: _Document_Doctor_) => _Action_Editor_, urgency: "now" | "soon") => {
+  const perform: _Session_Webview_["perform"] = (act, urgency) => {
     const current = loadRef.current;
     if (current.kind !== "editing") return;
-    const action = act(current.document);
-    if (action.operations.length > 0) {
-      const result = record(current.session, action.operations);
-      if (result.kind === "refused") {
-        setProblems([result.issue]);
-        return;
-      }
-      setLoad(editingLoad(result.session));
-      setProblems([]);
-      window.clearTimeout(timer.current);
-      if (urgency === "now") setDue("due");
-      else timer.current = window.setTimeout(() => setDue("due"), pause);
+    const operations = act(current.document);
+    if (operations.length === 0) return;
+    const result = record(current.session, operations);
+    if (result.kind === "refused") {
+      setProblems([result.issue]);
+      return;
     }
-    setFocus(action.focus);
+    setLoad(editingLoad(result.session));
+    setProblems([]);
+    window.clearTimeout(timer.current);
+    if (urgency === "now") setDue("due");
+    else timer.current = window.setTimeout(() => setDue("due"), pause);
   };
 
-  const editing: _Editing_View_ = {
-    focus,
-    retext: (spot, text) => perform((document) => retext(document, spot, text), "soon"),
-    split: (spot, text, offset) => perform((document) => split(document, spot, text, offset, mintNodeId), "now"),
-    backspace: (spot) => perform((document) => backspace(document, spot), "now"),
-    recode: (node, code) => perform((document) => recode(document, node, code), "soon"),
-    leave: () => {
-      window.clearTimeout(timer.current);
-      setDue("due");
-    },
+  const leave = () => {
+    window.clearTimeout(timer.current);
+    setDue("due");
   };
 
-  return { load, problems, connection, editing };
+  return { load, problems, connection, arrivals, perform, leave };
 }

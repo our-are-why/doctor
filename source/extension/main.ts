@@ -10,7 +10,7 @@ import {
 } from "../shared/protocol.ts";
 import { createDocument, makeChange } from "./changes.ts";
 import { registerDashboardSerializer, showDashboard } from "./dashboard.ts";
-import { documentViewType, registerDocumentEditor } from "./documentEditor.ts";
+import { documentViewType, registerDocumentEditor, textViewType } from "./documentEditor.ts";
 import { documentSuffix, newDocument, readDocument } from "./documents.ts";
 import { mintToken, startEndpoint, type _Connect_Endpoint_ } from "./endpoint.ts";
 
@@ -116,7 +116,7 @@ async function newDocumentCommand(): Promise<void> {
     return;
   }
   await createDocument(file, dataFolderOf(into), newDocument(basename(file, documentSuffix)), "human");
-  await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(file), documentViewType);
+  await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(file), textViewType);
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -135,7 +135,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   environment.replace("DOCTOR_TOKEN", tokens.agent);
 
   context.subscriptions.push(
-    registerDocumentEditor(context.extensionUri, endpoint, tokens),
+    registerDocumentEditor(documentViewType, "document", context.extensionUri, endpoint, tokens),
+    registerDocumentEditor(textViewType, "text", context.extensionUri, endpoint, tokens),
     registerDashboardSerializer(context.extensionUri, endpoint, tokens),
     vscode.commands.registerCommand("doctor.openDashboard", () =>
       showDashboard(context.extensionUri, endpoint, tokens, vscode.ViewColumn.Active),

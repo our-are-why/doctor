@@ -4,10 +4,10 @@ Reads, edits and annotates documents beside an agent such as Claude Code. A
 VS Code extension for code-server: its document editor and task dashboard
 are webviews, and the agent works in VS Code's own terminal.
 
-So far documents can be created and edited in place: "doctor: new document"
-makes one, the editor opens any `*.doctor.json` (or says why it can't), and
-every save becomes a version in the document's history. Notes and tasks come
-next.
+So far documents can be created and edited: "doctor: new document" makes
+one, any `*.doctor.json` opens in doctor's editor, a text editor like VS
+Code's own, and every save becomes a version in the document's history. A
+read-only reading view renders the same document. Notes and tasks come next.
 
 ## Develop
 
@@ -25,7 +25,9 @@ Open code-server at http://localhost:8085 and, in its terminal, run:
 
 then reload the window (Developer: Reload Window). In code-server:
 
-- any `*.doctor.json` file opens in doctor's document editor;
+- any `*.doctor.json` file opens in doctor's editor; "Reopen Editor With…
+  → doctor reading view" shows it rendered, beside the editor if you split
+  first;
 - "doctor: open the task dashboard" opens the dashboard as an editor tab;
 - "Terminal: Create New Terminal in Editor Area" puts a terminal beside them.
 
@@ -59,7 +61,9 @@ committed.
                         entries/
     source/shared/      what both import: the domain's types (domain.next.ts,
                         which replaced domain.ts), the protocol between them,
-                        parsing, and applying changes to a document
+                        parsing, applying changes to a document, and the
+                        document as lines of text (projection.ts), read back
+                        into changes (reconcile.ts)
     scripts/            the project's own tools: building and installing the
                         extension, makeCssTypes.ts
     notes/              how types are built (type-construction.md)
@@ -91,6 +95,12 @@ What doctor is built from, and why:
   contrast and links are marks over ranges of it, counted in code points. An
   edit writes the characters and carries the marks across, or styles the
   overlay.
+- **The editor is Monaco, VS Code's editor.** It shows the document as
+  lines: `#0` and the title first, a heading as `#n` numbered by depth,
+  items as `-` or a number indented two spaces per level, quotes as `>`,
+  code between ``` fences. Marks are real text, drawn quietly; contrast is
+  never written, only shown, and set with shortcuts. Each edit is read back
+  into the document and turned into operations, keeping every node's id.
 - **Versions, not revisions.** A version is the hash of a document's
   content; `.doctor/objects/` stores each node under its own hash, so a
   version shares every node it didn't change, and `.doctor/history/` logs

@@ -1,0 +1,602 @@
+import { textOperations } from "../shared/apply.ts";
+import type {
+  _Contrast_Mark_,
+  _Document_Doctor_,
+  _Holder_Text_,
+  _Id_Node_,
+  _LINK_Mark__Text_,
+  _Operation_Change_,
+  _Text_Doctor_,
+} from "../shared/domain.next.ts";
+import { contentStart, project } from "../shared/projection.ts";
+import { lengthOf, segmentsOf, toggleContrast, type _Segment_Text_ } from "../shared/text.ts";
+import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
+import * as monaco from "./monaco.ts";
+import "./styles/monaco.css";
+import styles from "./styles/TextEditor.module.css";
+import { describeTarget } from "./TextView.tsx";
+
+export interface _Hooks_View_ {
+  edited: (lines: Array<string>, owners: Array<Array<_Id_Node_>>) => void;
+  perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>) => void;
+  leave: () => void;
+}
+
+export interface _View_Text_ {
+  show: (document: _Document_Doctor_) => void;
+  track: (owners: Array<Array<_Id_Node_>>) => void;
+  decorate: (document: _Document_Doctor_) => void;
+  mark: (issues: Array<string>) => void;
+  propose: (node: _Id_Node_, text: string) => void;
+  dispose: () => void;
+}
+
+// positions in a line's content: the document counts code points, Monaco
+// counts UTF-16 units
+const unitsOf = (characters: string, points: number) => Array.from(characters).slice(0, points).join("").length;
+const pointsOf = (characters: string, units: number) => lengthOf(characters.slice(0, units));
+
+const colorPairs: Array<[string, string]> = [
+  ["editor.background", "editor-background"],
+  ["editor.foreground", "editor-foreground"],
+  ["editorLineNumber.foreground", "editorLineNumber-foreground"],
+  ["editorLineNumber.activeForeground", "editorLineNumber-activeForeground"],
+  ["editorCursor.foreground", "editorCursor-foreground"],
+  ["editor.selectionBackground", "editor-selectionBackground"],
+  ["editor.inactiveSelectionBackground", "editor-inactiveSelectionBackground"],
+  ["editor.selectionHighlightBackground", "editor-selectionHighlightBackground"],
+  ["editor.lineHighlightBackground", "editor-lineHighlightBackground"],
+  ["editor.lineHighlightBorder", "editor-lineHighlightBorder"],
+  ["editorGutter.background", "editorGutter-background"],
+  ["editorWidget.background", "editorWidget-background"],
+  ["editorWidget.foreground", "editorWidget-foreground"],
+  ["editorWidget.border", "editorWidget-border"],
+  ["editorHoverWidget.background", "editorHoverWidget-background"],
+  ["editorHoverWidget.border", "editorHoverWidget-border"],
+  ["editorError.foreground", "editorError-foreground"],
+  ["input.background", "input-background"],
+  ["input.foreground", "input-foreground"],
+  ["input.border", "input-border"],
+  ["focusBorder", "focusBorder"],
+  ["menu.background", "menu-background"],
+  ["menu.foreground", "menu-foreground"],
+  ["menu.selectionBackground", "menu-selectionBackground"],
+  ["menu.selectionForeground", "menu-selectionForeground"],
+  ["scrollbarSlider.background", "scrollbarSlider-background"],
+  ["scrollbarSlider.hoverBackground", "scrollbarSlider-hoverBackground"],
+  ["scrollbarSlider.activeBackground", "scrollbarSlider-activeBackground"],
+];
+
+// VS Code's own colours, as the webview receives them
+function applyTheme(): void {
+  const style = getComputedStyle(document.documentElement);
+  const colors = Object.fromEntries(
+    colorPairs.flatMap(([key, name]) => {
+      const value = style.getPropertyValue(`--vscode-${name}`).trim();
+      return /^#[0-9a-f]{3,8}$/i.test(value) ? [[key, value]] : [];
+    }),
+  );
+  const classes = document.body.classList;
+  const dark = classes.contains("vscode-dark") || classes.contains("vscode-high-contrast");
+  monaco.editor.defineTheme("doctor", { base: dark ? "vs-dark" : "vs", inherit: true, rules: [], colors });
+  monaco.editor.setTheme("doctor");
+}
+
+const languages = new Set<string>();
+
+// Enter carries an item's marker, or a quote's, on to the next line, which
+// keeps the item's indentation; a code block's lines are tokenized in the
+// language its fence names
+function registerLanguages(): void {
+  if (languages.size > 0) return;
+  const carry = (pattern: string, mark: string) => ({
+    beforeText: new RegExp(`^${pattern}`),
+    action: { indentAction: monaco.languages.IndentAction.None, appendText: mark },
+  });
+  const onEnterRules = [
+    carry(" *- ", "- "),
+    carry(" *\\d+\\. ", "1. "),
+    ...[6, 5, 4, 3, 2, 1].map((depth) => carry(`>{${depth}} `, `${">".repeat(depth)} `)),
+  ];
+  monaco.languages.register({ id: "doctor" });
+  monaco.languages.setLanguageConfiguration("doctor", { onEnterRules });
+  const fence = "^(?:>+ )?```";
+  monaco.languages.setMonarchTokensProvider("doctor", {
+    tokenizer: {
+      root: [
+        ...fenceLanguages.map(([names, id]): monaco.languages.IMonarchLanguageRule => [
+          new RegExp(`${fence}(?:${names})\\s*$`),
+          { token: "doctor.fence", next: "@code", nextEmbedded: id },
+        ]),
+        [new RegExp(`${fence}.*$`), { token: "doctor.fence", next: "@plain" }],
+        [/.*$/, ""],
+      ],
+      code: [[new RegExp(`${fence}\\s*$`), { token: "doctor.fence", next: "@pop", nextEmbedded: "@pop" }]],
+      plain: [
+        [new RegExp(`${fence}\\s*$`), { token: "doctor.fence", next: "@pop" }],
+        [/.*$/, ""],
+      ],
+    },
+  });
+  languages.add("doctor");
+}
+
+// A line's marks, drawn quietly: a heading's #n as a badge, an item's - or
+// number dimmed, a quote's > hidden behind its bar, an escaping backslash
+// as nothing. They stay characters, so they're edited like any text; the
+// one that changes width says so, for Monaco to measure.
+interface _Piece_Mark_ {
+  from: number;
+  to: number;
+  className: string;
+  spacing: "keeps" | "changes";
+}
+
+function markPieces(content: string): Array<_Piece_Mark_> {
+  const pieces: Array<_Piece_Mark_> = [];
+  const piece = (from: number, to: number, className: string, spacing: _Piece_Mark_["spacing"]) => {
+    if (to > from) pieces.push({ from, to, className, spacing });
+  };
+  const quote = /^(>+) /.exec(content);
+  let at = 0;
+  if (quote !== null) {
+    const marks = quote[1]?.length ?? 0;
+    piece(0, marks, styles.quoteMark, "keeps");
+    at = marks + 1;
+  }
+  const rest = content.slice(at);
+  const heading = /^#\d+(?= |$)/.exec(rest);
+  const item = /^( *)(-|\d+\.) /.exec(rest);
+  if (heading !== null) {
+    piece(at, at + heading[0].length, styles.badge, "keeps");
+    at += heading[0].length + (rest.charAt(heading[0].length) === " " ? 1 : 0);
+  } else if (item !== null) {
+    const indent = item[1]?.length ?? 0;
+    piece(at + indent, at + indent + (item[2]?.length ?? 1), styles.mark, "keeps");
+    at += item[0].length;
+  }
+  if (content.slice(at).startsWith("\\")) piece(at, at + 1, styles.collapse, "changes");
+  return pieces;
+}
+
+// the languages a code block's fence can name, and what Monaco calls them
+const fenceLanguages: Array<[string, string]> = [
+  ["typescript|ts|tsx", "typescript"],
+  ["javascript|js|jsx|mjs|cjs|json|jsonc", "javascript"],
+  ["python|py", "python"],
+  ["shell|sh|bash|zsh|console", "shell"],
+  ["powershell|ps1", "powershell"],
+  ["css", "css"],
+  ["scss", "scss"],
+  ["less", "less"],
+  ["html", "html"],
+  ["xml|svg", "xml"],
+  ["markdown|md", "markdown"],
+  ["yaml|yml", "yaml"],
+  ["ini|toml", "ini"],
+  ["dockerfile|docker", "dockerfile"],
+  ["sql", "sql"],
+  ["graphql|gql", "graphql"],
+  ["rust|rs", "rust"],
+  ["go", "go"],
+  ["java", "java"],
+  ["kotlin|kt", "kotlin"],
+  ["swift", "swift"],
+  ["c|cpp|cc|h|hpp", "cpp"],
+  ["csharp|cs", "csharp"],
+  ["ruby|rb", "ruby"],
+  ["php", "php"],
+  ["lua", "lua"],
+];
+
+const segmentClass = (segment: _Segment_Text_) =>
+  [...segment.contrast.map((contrast) => styles[contrast]), ...(segment.links.length > 0 ? [styles.link] : [])].join(" ");
+
+export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Text_ {
+  registerLanguages();
+  applyTheme();
+  const observer = new MutationObserver(applyTheme);
+  observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+  const style = getComputedStyle(document.documentElement);
+  const model = monaco.editor.createModel("", "doctor");
+  const editor = monaco.editor.create(host, {
+    model,
+    theme: "doctor",
+    automaticLayout: true,
+    fontFamily: style.getPropertyValue("--vscode-editor-font-family").trim() || "monospace",
+    fontSize: Number.parseFloat(style.getPropertyValue("--vscode-editor-font-size")) || 14,
+    wordWrap: "on",
+    wrappingIndent: "same",
+    detectIndentation: false,
+    tabSize: 2,
+    insertSpaces: true,
+    wrappingStrategy: "advanced",
+    minimap: { enabled: false },
+    folding: false,
+    glyphMargin: false,
+    scrollBeyondLastLine: false,
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    wordBasedSuggestions: "off",
+    links: false,
+    occurrencesHighlight: "off",
+    unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
+    renderLineHighlight: "gutter",
+    fixedOverflowWidgets: true,
+  });
+
+  let documents: Array<_Document_Doctor_> = [];
+  let applying: "idle" | "applying" = "idle";
+  let queued: "idle" | "queued" = "idle";
+  let tracked = new Map<string, _Id_Node_>();
+  const styling = editor.createDecorationsCollection();
+  const proposal = editor.createDecorationsCollection();
+  let zones: Array<string> = [];
+
+  // the node each line holds: the line its tracking decoration starts on,
+  // preferring one that still covers something, then the leftmost
+  const ownersNow = (): Array<Array<_Id_Node_>> => {
+    const best: Array<{ id: _Id_Node_; empty: boolean; column: number } | undefined> = [];
+    for (const [decoration, id] of tracked) {
+      const range = model.getDecorationRange(decoration);
+      if (range === null) continue;
+      const line = range.startLineNumber - 1;
+      const candidate = { id, empty: range.isEmpty(), column: range.startColumn };
+      const current = best[line];
+      const better =
+        current === undefined ||
+        (current.empty && !candidate.empty) ||
+        (current.empty === candidate.empty && candidate.column < current.column);
+      if (better) best[line] = candidate;
+    }
+    return model.getLinesContent().map((_, line) => {
+      const entry = best[line];
+      return entry === undefined ? [] : [entry.id];
+    });
+  };
+
+  const track = (owners: Array<Array<_Id_Node_>>) => {
+    const decorations = owners.flatMap((owner, line) =>
+      owner.map((id) => ({
+        id,
+        decoration: {
+          range: new monaco.Range(line + 1, 1, line + 1, model.getLineMaxColumn(line + 1)),
+          options: {
+            description: "doctor-owner",
+            stickiness: monaco.editor.TrackedRangeStickiness.GrowsOnlyWhenTypingAfter,
+          },
+        },
+      })),
+    );
+    const ids = model.deltaDecorations([...tracked.keys()], decorations.map((entry) => entry.decoration));
+    tracked = new Map(
+      ids.flatMap((decoration, index) => {
+        const entry = decorations[index];
+        return entry === undefined ? [] : [[decoration, entry.id]];
+      }),
+    );
+  };
+
+  const holderAt = (line: number, owners: Array<Array<_Id_Node_>>): Array<_Holder_Text_> =>
+    line === 1 ? [{ kind: "title" }] : (owners[line - 1] ?? []).map((node) => ({ kind: "node", node }));
+
+  const textAt = (document: _Document_Doctor_, holder: _Holder_Text_): Array<_Text_Doctor_> => {
+    if (holder.kind === "title") return [document.content.title];
+    const node = indexNodes(document.content).get(holder.node)?.node;
+    return node === undefined ? [] : textOfNode(node);
+  };
+
+  const decorate = (document: _Document_Doctor_) => {
+    documents = [document];
+    const owners = ownersNow();
+    const index = indexNodes(document.content);
+    const decorations: Array<monaco.editor.IModelDeltaDecoration> = [];
+    const inline = (line: number, from: number, to: number, className: string) => {
+      if (to > from) decorations.push({ range: new monaco.Range(line, from + 1, line, to + 1), options: { inlineClassName: className } });
+    };
+    const whole = (line: number, className: string) =>
+      decorations.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className } });
+    const selections = editor.getSelections() ?? [];
+    // a line's marks show as they're written while the caret is in them
+    const marks = (line: number, content: string, start: number) => {
+      const prefix = new monaco.Range(line, 1, line, start + 1);
+      if (selections.some((selection) => monaco.Range.areIntersectingOrTouching(selection, prefix))) {
+        inline(line, 0, start, styles.mark);
+        return;
+      }
+      for (const each of markPieces(content)) {
+        decorations.push({
+          range: new monaco.Range(line, each.from + 1, line, each.to + 1),
+          options: { inlineClassName: each.className, inlineClassNameAffectsLetterSpacing: each.spacing === "changes" },
+        });
+      }
+    };
+    let code: "outside" | "inside" = "outside";
+    model.getLinesContent().forEach((content, at) => {
+      const line = at + 1;
+      const quote = /^(?:>+ )?/.exec(content)?.[0] ?? "";
+      if (code === "inside") {
+        const closing = content.slice(quote.length) === "```";
+        whole(line, closing ? styles.codeEnd : styles.code);
+        if (closing) {
+          inline(line, 0, content.length, styles.fence);
+          code = "outside";
+        }
+        return;
+      }
+      const [owner] = owners[at] ?? [];
+      const node = owner === undefined ? undefined : index.get(owner)?.node;
+      if (quote.length > 0) whole(line, styles.quote);
+      if (node?.kind === "code") {
+        whole(line, styles.codeStart);
+        const fence = quote.length + 3;
+        inline(line, 0, fence, styles.fence);
+        inline(line, fence, content.length, styles.language);
+        code = "inside";
+        return;
+      }
+      const start = contentStart(content);
+      marks(line, content, start);
+      if (line === 1 || node?.kind === "section") {
+        const last = content.length - (Array.from(content).at(-1)?.length ?? 0);
+        inline(line, last, content.length, styles.leader);
+      }
+      const [text] = line === 1 ? [document.content.title] : node === undefined ? [] : textOfNode(node);
+      const body = content.slice(start);
+      if (text === undefined || text.text !== body) return;
+      for (const segment of segmentsOf(text)) {
+        inline(line, start + unitsOf(body, segment.from), start + unitsOf(body, segment.to), segmentClass(segment));
+      }
+    });
+    styling.set(decorations);
+  };
+
+  // where the caret sits, as a character of a text, so it can be put back
+  // on the same character once the text is replaced
+  const caretIn = (): Array<{ holder: _Holder_Text_; character: number }> => {
+    const position = editor.getPosition();
+    if (position === null) return [];
+    const [holder] = holderAt(position.lineNumber, ownersNow());
+    if (holder === undefined) return [];
+    const content = model.getLineContent(position.lineNumber);
+    const start = contentStart(content);
+    const body = content.slice(start);
+    return [{ holder, character: pointsOf(body, Math.max(position.column - 1 - start, 0)) }];
+  };
+
+  const show = (document: _Document_Doctor_) => {
+    const [caret] = caretIn();
+    const scroll = editor.getScrollTop();
+    const projection = project(document);
+    applying = "applying";
+    model.setValue(projection.lines.join("\n"));
+    track(projection.owners);
+    applying = "idle";
+    decorate(document);
+    editor.setScrollTop(scroll);
+    if (caret === undefined) return;
+    const place = projection.places.find((each) =>
+      caret.holder.kind === "title" ? each.holder.kind === "title" : each.holder.kind === "node" && each.holder.node === caret.holder.node,
+    );
+    if (place === undefined) return;
+    const body = (projection.lines[place.line] ?? "").slice(place.start);
+    const column = unitsOf(body, caret.character);
+    editor.setPosition({ lineNumber: place.line + 1, column: place.start + column + 1 });
+  };
+
+  const mark = (issues: Array<string>) => {
+    const markers = issues.flatMap((issue) => {
+      const match = /^line (\d+): (?:column (\d+): )?(.*)$/.exec(issue);
+      if (match === null) return [];
+      const line = Number(match[1]);
+      if (line < 1 || line > model.getLineCount()) return [];
+      const content = model.getLineContent(line);
+      const column = match[2] === undefined ? 1 : contentStart(content) + Number(match[2]);
+      return [
+        {
+          severity: monaco.MarkerSeverity.Error,
+          message: match[3] ?? issue,
+          startLineNumber: line,
+          startColumn: column,
+          endLineNumber: line,
+          endColumn: match[2] === undefined ? model.getLineMaxColumn(line) : column + 1,
+        },
+      ];
+    });
+    monaco.editor.setModelMarkers(model, "doctor", markers);
+  };
+
+  const toggle = (contrast: _Contrast_Mark_) => {
+    const [document] = documents;
+    if (document === undefined) return;
+    const owners = ownersNow();
+    const selections = (editor.getSelections() ?? []).filter((selection) => !selection.isEmpty());
+    const changed = new Map<string, { holder: _Holder_Text_; before: _Text_Doctor_; after: _Text_Doctor_ }>();
+    for (const selection of selections) {
+      for (let line = selection.startLineNumber; line <= selection.endLineNumber; line += 1) {
+        const [holder] = holderAt(line, owners);
+        const [before] = holder === undefined ? [] : textAt(document, holder);
+        if (holder === undefined || before === undefined) continue;
+        const content = model.getLineContent(line);
+        const start = contentStart(content);
+        const body = content.slice(start);
+        if (body !== before.text) continue;
+        const from = line === selection.startLineNumber ? Math.max(selection.startColumn - 1 - start, 0) : 0;
+        const to = line === selection.endLineNumber ? Math.max(selection.endColumn - 1 - start, 0) : body.length;
+        const key = holder.kind === "title" ? "" : holder.node;
+        const entry = changed.get(key) ?? { holder, before, after: before };
+        changed.set(key, { ...entry, after: toggleContrast(entry.after, pointsOf(body, from), pointsOf(body, to), contrast) });
+      }
+    }
+    hooks.perform(() => [...changed.values()].flatMap((entry) => textOperations(entry.holder, entry.before, entry.after)));
+  };
+
+  const clearProposal = () => {
+    editor.changeViewZones((accessor) => {
+      for (const zone of zones) accessor.removeZone(zone);
+    });
+    zones = [];
+    proposal.clear();
+  };
+
+  // a stand-in for a task's proposal: the node's text struck through, and
+  // the proposed text beneath it, to accept or reject
+  const propose = (node: _Id_Node_, text: string) => {
+    const at = ownersNow().findIndex((owner) => owner.includes(node));
+    if (at === -1) return;
+    const line = at + 1;
+    const content = model.getLineContent(line);
+    const start = contentStart(content);
+    proposal.set([
+      { range: new monaco.Range(line, start + 1, line, content.length + 1), options: { inlineClassName: styles.removed } },
+    ]);
+    const zone = document.createElement("div");
+    zone.className = styles.proposal;
+    const added = document.createElement("div");
+    added.className = styles.added;
+    added.textContent = text;
+    const accept = document.createElement("button");
+    accept.textContent = "Accept";
+    const reject = document.createElement("button");
+    reject.textContent = "Reject";
+    const actions = document.createElement("div");
+    actions.className = styles.actions;
+    actions.append(accept, reject);
+    zone.append(added, actions);
+    accept.addEventListener("click", () => {
+      const now = ownersNow().findIndex((owner) => owner.includes(node)) + 1;
+      clearProposal();
+      if (now === 0) return;
+      const current = model.getLineContent(now);
+      const begin = contentStart(current);
+      editor.executeEdits("doctor", [{ range: new monaco.Range(now, begin + 1, now, current.length + 1), text }]);
+    });
+    reject.addEventListener("click", clearProposal);
+    editor.changeViewZones((accessor) => {
+      zones = [accessor.addZone({ afterLineNumber: line, heightInLines: 3, domNode: zone, suppressMouseDown: true })];
+    });
+  };
+
+  const linkAt = (position: monaco.Position): Array<_LINK_Mark__Text_> => {
+    const [document] = documents;
+    const [holder] = holderAt(position.lineNumber, ownersNow());
+    const [text] = document === undefined || holder === undefined ? [] : textAt(document, holder);
+    if (text === undefined) return [];
+    const content = model.getLineContent(position.lineNumber);
+    const start = contentStart(content);
+    const character = pointsOf(content.slice(start), position.column - 1 - start);
+    return text.overlay.filter(
+      (mark): mark is _LINK_Mark__Text_ => mark.kind === "link" && mark.from <= character && mark.to > character,
+    );
+  };
+
+  const hover = monaco.languages.registerHoverProvider("doctor", {
+    provideHover: (hovered, position) => {
+      if (hovered !== model) return null;
+      const [link] = linkAt(position);
+      return link === undefined ? null : { contents: [{ value: describeTarget(link.target) }] };
+    },
+  });
+
+  const action = (id: string, label: string, keybindings: Array<number>, run: () => void) =>
+    editor.addAction({ id, label, keybindings, contextMenuGroupId: "1_doctor", run });
+  const { KeyMod, KeyCode } = monaco;
+  action("doctor.bold", "doctor: bold", [KeyMod.CtrlCmd | KeyCode.KeyB], () => toggle("bold"));
+  action("doctor.italic", "doctor: italic", [KeyMod.CtrlCmd | KeyCode.KeyI], () => toggle("italic"));
+  action("doctor.monospace", "doctor: monospace", [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyM], () => toggle("monospace"));
+  action("doctor.highlighted", "doctor: highlighted", [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyH], () => toggle("highlighted"));
+  action("doctor.struck", "doctor: struck", [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyX], () => toggle("struck"));
+
+  // a numbered list's numbers, kept right as items come and go and move
+  const renumber = () => {
+    const edits: Array<monaco.editor.IIdentifiedSingleEditOperation> = [];
+    let counters: Array<number> = [];
+    let within = "";
+    let code: "outside" | "inside" = "outside";
+    model.getLinesContent().forEach((content, at) => {
+      const quote = /^(?:>+ )?/.exec(content)?.[0] ?? "";
+      const rest = content.slice(quote.length);
+      if (rest.startsWith("```")) code = code === "inside" ? "outside" : "inside";
+      const item = code === "outside" ? /^( *)(?:-|(\d+)\.) /.exec(rest) : null;
+      if (item === null || quote !== within) counters = [];
+      within = quote;
+      if (item === null) return;
+      const indent = item[1]?.length ?? 0;
+      const depth = Math.floor(indent / 2) + 1;
+      counters = counters.slice(0, depth);
+      while (counters.length < depth) counters.push(0);
+      const number = (counters[depth - 1] ?? 0) + 1;
+      counters[depth - 1] = number;
+      if (item[2] === undefined || item[2] === String(number)) return;
+      const column = quote.length + indent + 1;
+      edits.push({ range: new monaco.Range(at + 1, column, at + 1, column + item[2].length), text: String(number) });
+    });
+    if (edits.length === 0) return;
+    applying = "applying";
+    model.pushEditOperations([], edits, () => null);
+    applying = "idle";
+  };
+
+  model.onDidChangeContent(() => {
+    if (applying === "applying" || queued === "queued") return;
+    queued = "queued";
+    queueMicrotask(() => {
+      queued = "idle";
+      renumber();
+      hooks.edited(model.getLinesContent(), ownersNow());
+    });
+  });
+
+  // Tab and Shift+Tab move an item a level in or out, wherever the caret is
+  // in it
+  const inItem = editor.createContextKey<boolean>("doctorItem", false);
+  const isItem = (line: number) => {
+    const [owner] = ownersNow()[line - 1] ?? [];
+    const [document] = documents;
+    return owner !== undefined && document !== undefined && indexNodes(document.content).get(owner)?.node.kind === "listItem";
+  };
+  const shift = (direction: "in" | "out") => {
+    const lines = new Set((editor.getSelections() ?? []).flatMap((selection) => {
+      const spanned: Array<number> = [];
+      for (let line = selection.startLineNumber; line <= selection.endLineNumber; line += 1) spanned.push(line);
+      return spanned;
+    }));
+    const edits = [...lines].filter(isItem).flatMap((line) => {
+      const content = model.getLineContent(line);
+      const quote = /^(?:>+ )?/.exec(content)?.[0] ?? "";
+      const column = quote.length + 1;
+      if (direction === "in") return [{ range: new monaco.Range(line, column, line, column), text: "  " }];
+      const spaces = /^ {0,2}/.exec(content.slice(quote.length))?.[0].length ?? 0;
+      return spaces === 0 ? [] : [{ range: new monaco.Range(line, column, line, column + spaces), text: "" }];
+    });
+    editor.executeEdits("doctor", edits);
+  };
+  editor.addCommand(monaco.KeyCode.Tab, () => shift("in"), "doctorItem");
+  editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Tab, () => shift("out"), "doctorItem");
+  editor.onDidChangeCursorPosition((event) => inItem.set(isItem(event.position.lineNumber)));
+  editor.onDidBlurEditorText(() => hooks.leave());
+  editor.onDidChangeCursorSelection(() => {
+    for (const document of documents) decorate(document);
+  });
+
+  return {
+    show,
+    track,
+    decorate,
+    mark,
+    propose,
+    dispose: () => {
+      observer.disconnect();
+      hover.dispose();
+      editor.dispose();
+      model.dispose();
+    },
+  };
+}
+
+// the last paragraph in reading order, for the stand-in proposal
+export function lastParagraph(document: _Document_Doctor_): Array<_Id_Node_> {
+  const paragraphs = document.content.children.flatMap(nodesWithin).filter((node) => node.kind === "paragraph");
+  return paragraphs.slice(-1).map((node) => node.id);
+}

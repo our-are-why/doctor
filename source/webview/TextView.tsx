@@ -1,5 +1,5 @@
 import type { _Contrast_Mark_, _LINK_Mark__Text_, _Target_Link_, _Text_Doctor_ } from "../shared/domain.next.ts";
-import { contrastOrder } from "../shared/invariants.ts";
+import { segmentsOf } from "../shared/text.ts";
 import styles from "./styles/Text.module.css";
 
 export interface _Segment_Render_ {
@@ -37,38 +37,24 @@ export function describeTarget(target: _Target_Link_): string {
   }
 }
 
-// the text cut wherever a mark starts or ends, with the pieces under one link
-// kept together
+// the text's segments, with the ones under one link kept together
 export function groupsOf(text: _Text_Doctor_): Array<_Group_Render_> {
   const characters = Array.from(text.text);
-  const cuts = [...new Set([0, characters.length, ...text.overlay.flatMap((mark) => [mark.from, mark.to])])]
-    .filter((cut) => cut <= characters.length)
-    .toSorted((first, second) => first - second);
   const groups: Array<_Group_Render_> = [];
   let under: Array<_LINK_Mark__Text_> = [];
-  cuts.slice(1).forEach((to, index) => {
-    const from = cuts[index] ?? 0;
-    const covers = (mark: { from: number; to: number }) => mark.from <= from && mark.to >= to;
-    const segment: _Segment_Render_ = {
-      text: characters.slice(from, to).join(""),
-      contrast: contrastOrder.filter((contrast) =>
-        text.overlay.some((mark) => mark.kind === "contrast" && mark.contrast === contrast && covers(mark)),
-      ),
-    };
-    const links = text.overlay.filter((mark): mark is _LINK_Mark__Text_ => mark.kind === "link" && covers(mark));
-    const [link] = links;
+  for (const segment of segmentsOf(text)) {
+    const piece: _Segment_Render_ = { text: characters.slice(segment.from, segment.to).join(""), contrast: segment.contrast };
+    const [link] = segment.links;
     const last = groups.at(-1);
     if (last !== undefined && link === under[0]) {
-      last.segments.push(segment);
-      return;
+      last.segments.push(piece);
+      continue;
     }
     groups.push(
-      link === undefined
-        ? { kind: "plain", segments: [segment] }
-        : { kind: "linked", target: link.target, segments: [segment] },
+      link === undefined ? { kind: "plain", segments: [piece] } : { kind: "linked", target: link.target, segments: [piece] },
     );
-    under = links.slice(0, 1);
-  });
+    under = segment.links.slice(0, 1);
+  }
   return groups;
 }
 

@@ -1,28 +1,15 @@
 import type { _DOCUMENT_Config__Webview_ } from "../shared/protocol.ts";
 import { ConnectionStatus } from "./ConnectionStatus.tsx";
 import { DocumentView } from "./DocumentView.tsx";
-import { EditingContext } from "./editing.ts";
-import { waiting } from "./session.ts";
 import styles from "./styles/Shell.module.css";
-import { useEditing, type _Load_Editor_ } from "./useEditing.ts";
+import { useSession } from "./useSession.ts";
 
-function describeSaving(load: _Load_Editor_): string {
-  if (load.kind !== "editing") return "";
-  return waiting(load.session) === 0 ? "saved" : "saving…";
-}
-
+// the reading view: the document rendered, kept current as it changes
 export function DocumentEditor({ config }: { config: _DOCUMENT_Config__Webview_ }) {
-  const { load, problems, connection, editing } = useEditing(config);
+  const { load, connection } = useSession(config.file, config.endpoint, config.token);
   return (
     <main className={styles.shell}>
-      {problems.map((problem) => (
-        <p className={styles.problem}>{problem}</p>
-      ))}
-      {load.kind === "editing" ? (
-        <EditingContext.Provider value={editing}>
-          <DocumentView document={load.document} />
-        </EditingContext.Provider>
-      ) : null}
+      {load.kind === "editing" ? <DocumentView document={load.document} /> : null}
       {load.kind === "unreadable" ? (
         <>
           <h1 className={styles.heading}>doctor can't read this document</h1>
@@ -34,7 +21,6 @@ export function DocumentEditor({ config }: { config: _DOCUMENT_Config__Webview_ 
       {load.kind === "loading" ? <p className={styles.detail}>{config.file}</p> : null}
       <footer className={styles.status}>
         <ConnectionStatus connection={connection} />
-        <p className={styles.detail}>{describeSaving(load)}</p>
       </footer>
     </main>
   );

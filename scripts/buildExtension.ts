@@ -71,7 +71,7 @@ function packageManifest(manifest: _Manifest_Extension_): string {
 }
 
 const contentTypes = `<?xml version="1.0" encoding="utf-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".json" ContentType="application/json"/><Default Extension=".js" ContentType="application/javascript"/><Default Extension=".css" ContentType="text/css"/><Default Extension=".vsixmanifest" ContentType="text/xml"/></Types>`;
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".json" ContentType="application/json"/><Default Extension=".js" ContentType="application/javascript"/><Default Extension=".css" ContentType="text/css"/><Default Extension=".vsixmanifest" ContentType="text/xml"/><Default Extension=".ttf" ContentType="font/ttf"/></Types>`;
 
 // a zip with stored, uncompressed entries: all a .vsix needs
 function zip(entries: Array<_Entry_Zip_>): Blob {
@@ -133,7 +133,7 @@ export async function buildExtension(): Promise<string> {
   });
   // one build per webview, so each gets its own stylesheet even when they
   // share styles
-  for (const webview of ["document", "dashboard"]) {
+  for (const webview of ["document", "text", "dashboard"]) {
     await bundle({
       entrypoints: [`source/webview/entries/${webview}.tsx`],
       target: "browser",
@@ -142,6 +142,15 @@ export async function buildExtension(): Promise<string> {
       minify: true,
     });
   }
+  // Monaco's worker, run from a blob, so a classic script with no imports
+  await bundle({
+    entrypoints: ["node_modules/monaco-editor/esm/vs/editor/editor.worker.js"],
+    target: "browser",
+    format: "iife",
+    outdir: join(extensionDirectory, "webview"),
+    naming: "textWorker.[ext]",
+    minify: true,
+  });
   await cp("source/extension/manifest.json", join(extensionDirectory, "package.json"));
 
   const encoder = new TextEncoder();

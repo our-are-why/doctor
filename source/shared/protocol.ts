@@ -94,7 +94,7 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
   v.strictObject({ kind: v.literal("refused"), file: v.string(), issues: issuesSchema }),
 ]);
 
-export type _Config_Webview_ = _DOCUMENT_Config__Webview_ | _DASHBOARD_Config__Webview_;
+export type _Config_Webview_ = _DOCUMENT_Config__Webview_ | _TEXT_Config__Webview_ | _DASHBOARD_Config__Webview_;
 
 interface __BASE_Config__Webview_<__ConfigKind__ extends string> {
   kind: __ConfigKind__;
@@ -103,6 +103,11 @@ interface __BASE_Config__Webview_<__ConfigKind__ extends string> {
 }
 
 export interface _DOCUMENT_Config__Webview_ extends __BASE_Config__Webview_<"document"> {
+  file: string;
+}
+
+// the document as text, in Monaco
+export interface _TEXT_Config__Webview_ extends __BASE_Config__Webview_<"text"> {
   file: string;
 }
 
@@ -115,5 +120,6 @@ export const webviewConfigSchema: v.GenericSchema<unknown, _Config_Webview_> = v
     token: tokenSchema,
     file: v.string(),
   }),
+  v.strictObject({ kind: v.literal("text"), endpoint: endpointUrlSchema, token: tokenSchema, file: v.string() }),
   v.strictObject({ kind: v.literal("dashboard"), endpoint: endpointUrlSchema, token: tokenSchema }),
 ]);

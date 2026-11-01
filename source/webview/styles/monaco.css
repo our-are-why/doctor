@@ -1,0 +1,11 @@
+/* Monaco's icon font, which its package doesn't let a stylesheet import by
+   name */
+@import "../../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css";
+@import "../../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon-modifiers.css";
+
+/* the editor fills the view, with no page margin around it */
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}

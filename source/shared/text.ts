@@ -194,3 +194,29 @@ export function sameOverlay(first: ReadonlyArray<_Mark_Text_>, second: ReadonlyA
     second.every((mark) => first.some((other) => sameMark(mark, other)))
   );
 }
+
+// a stretch of characters under one set of marks
+export interface _Segment_Text_ {
+  from: number;
+  to: number;
+  contrast: Array<_Contrast_Mark_>;
+  links: Array<_LINK_Mark__Text_>;
+}
+
+// the text cut wherever a mark starts or ends
+export function segmentsOf(text: _Text_Doctor_): Array<_Segment_Text_> {
+  const length = lengthOf(text.text);
+  const cuts = [...new Set([0, length, ...text.overlay.flatMap((mark) => [mark.from, mark.to])])]
+    .filter((cut) => cut <= length)
+    .toSorted((first, second) => first - second);
+  return cuts.slice(1).map((to, index) => {
+    const from = cuts[index] ?? 0;
+    const covers = (mark: _Mark_Text_) => mark.from <= from && mark.to >= to;
+    return {
+      from,
+      to,
+      contrast: contrastOrder.filter((contrast) => text.overlay.some((mark) => isContrast(contrast)(mark) && covers(mark))),
+      links: text.overlay.filter((mark): mark is _LINK_Mark__Text_ => isLink(mark) && covers(mark)),
+    };
+  });
+}

@@ -1,0 +1,166 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.host {
+  flex: 1;
+  min-height: 0;
+}
+
+.footer {
+  align-items: center;
+  border-top: 1px solid var(--vscode-widget-border, transparent);
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--vscode-font-family);
+  font-size: 0.85em;
+  gap: 0 1rem;
+  padding: 0.3rem 1rem;
+}
+
+.footer p {
+  margin: 0;
+}
+
+.problem {
+  color: var(--vscode-errorForeground);
+}
+
+/* decorations: each rule is scoped to the editor, so it outranks the
+   colour class Monaco gives every token */
+
+/* a heading, the title too: a rule from the end of its words to the
+   editor's edge, drawn from its last character so it starts where the words
+   end; the words are left to their own contrast */
+:global(.monaco-editor) .leader {
+  position: relative;
+}
+
+:global(.monaco-editor) .leader::after {
+  border-top: 1px solid color-mix(in srgb, var(--vscode-editor-foreground) 12%, transparent);
+  content: "";
+  left: calc(100% + 1ch);
+  pointer-events: none;
+  position: absolute;
+  top: 55%;
+  width: 100vw;
+}
+
+/* marks, drawn quietly; widths only change where the decoration says so */
+
+:global(.monaco-editor) .mark {
+  color: var(--vscode-editorLineNumber-foreground);
+  font-style: normal;
+  font-weight: normal;
+  text-decoration: none;
+}
+
+:global(.monaco-editor) .badge {
+  color: color-mix(in srgb, var(--vscode-editor-foreground) 65%, transparent);
+  font-style: normal;
+  font-weight: normal;
+}
+
+:global(.monaco-editor) .collapse {
+  color: transparent;
+  letter-spacing: -1ch;
+}
+
+:global(.monaco-editor) .quoteMark {
+  color: transparent;
+}
+
+:global(.monaco-editor) .quote {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--vscode-editor-foreground) 35%, transparent);
+}
+
+/* a code block, fences and all, on a neutral band a little above the
+   background: a translucent tint of the foreground, so the selection, drawn
+   in the same layer, shows through */
+
+:global(.monaco-editor) .code,
+:global(.monaco-editor) .codeStart,
+:global(.monaco-editor) .codeEnd {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 6%, transparent);
+}
+
+:global(.monaco-editor) .fence {
+  color: var(--vscode-editor-foreground);
+  opacity: 0.55;
+}
+
+:global(.monaco-editor) .language {
+  color: var(--vscode-editor-foreground);
+  font-style: italic;
+}
+
+/* contrast, in tints of the foreground: outside code, the text has no
+   colour of its own */
+
+:global(.monaco-editor) .bold {
+  font-weight: bold;
+}
+
+:global(.monaco-editor) .italic {
+  font-style: italic;
+}
+
+:global(.monaco-editor) .monospace {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 12%, transparent);
+}
+
+:global(.monaco-editor) .highlighted {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 28%, transparent);
+}
+
+:global(.monaco-editor) .struck {
+  text-decoration: line-through;
+}
+
+:global(.monaco-editor) .link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* the stand-in proposal */
+
+.removed {
+  background: var(--vscode-diffEditor-removedTextBackground);
+  text-decoration: line-through;
+}
+
+.proposal {
+  background: var(--vscode-diffEditor-insertedLineBackground);
+  border-left: 3px solid var(--vscode-gitDecoration-addedResourceForeground);
+  box-sizing: border-box;
+  font-family: var(--vscode-font-family);
+  padding: 0.3rem 0.6rem;
+}
+
+.added {
+  font-family: var(--vscode-editor-font-family);
+  margin-bottom: 0.3rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.actions button {
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: 2px;
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.1rem 0.6rem;
+}
+
+.actions button + button {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}

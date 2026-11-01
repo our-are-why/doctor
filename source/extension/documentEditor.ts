@@ -4,8 +4,11 @@ import type { _Tokens_Endpoint_ } from "./endpoint.ts";
 import { renderWebview, webviewOptions } from "./webview.ts";
 
 export const documentViewType = "doctor.document";
+export const textViewType = "doctor.text";
 
 export function registerDocumentEditor(
+  viewType: string,
+  kind: "document" | "text",
   extensionUri: vscode.Uri,
   endpoint: _Url_Endpoint_,
   tokens: _Tokens_Endpoint_,
@@ -15,12 +18,12 @@ export function registerDocumentEditor(
     resolveCustomEditor: (document, panel) => {
       panel.webview.options = webviewOptions(extensionUri);
       panel.webview.html = renderWebview(panel.webview, extensionUri, {
-        kind: "document",
+        kind,
         endpoint,
         token: tokens.human,
         file: document.uri.fsPath,
       });
     },
   };
-  return vscode.window.registerCustomEditorProvider(documentViewType, provider);
+  return vscode.window.registerCustomEditorProvider(viewType, provider);
 }

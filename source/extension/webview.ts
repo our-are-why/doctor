@@ -16,12 +16,17 @@ export function renderWebview(
   const endpoint = new URL(config.endpoint);
   const socketOrigin = `${endpoint.protocol === "https:" ? "wss:" : "ws:"}//${endpoint.host}`;
   const nonce = randomBytes(16).toString("base64");
+  // Monaco writes style elements of its own, and runs its worker from a
+  // blob made of a script it fetches
+  const monaco = config.kind === "text";
   const policy = [
     "default-src 'none'",
     `script-src 'nonce-${nonce}'`,
-    `style-src ${webview.cspSource}`,
+    `style-src ${webview.cspSource}${monaco ? " 'unsafe-inline'" : ""}`,
     `font-src ${webview.cspSource}`,
-    `connect-src ${endpoint.origin} ${socketOrigin}`,
+    `img-src ${webview.cspSource} data:`,
+    `connect-src ${endpoint.origin} ${socketOrigin}${monaco ? ` ${webview.cspSource}` : ""}`,
+    ...(monaco ? ["worker-src blob:"] : []),
   ].join("; ");
   // a JSON script block isn't run; < is escaped so the data can't close it
   const configJson = JSON.stringify(config).replace(/</g, "\\u003c");
@@ -37,7 +42,7 @@ export function renderWebview(
   <body>
     <div id="root"></div>
     <script type="application/json" id="doctor-config">${configJson}</script>
-    <script nonce="${nonce}" src="${asset(`${config.kind}.js`)}"></script>
+    <script type="module" nonce="${nonce}" src="${asset(`${config.kind}.js`)}"></script>
   </body>
 </html>`;
 }

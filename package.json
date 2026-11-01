@@ -10,6 +10,7 @@
     "installExtension": "bun run makeCssTypes && bun scripts/installExtension.ts"
   },
   "dependencies": {
+    "monaco-editor": "0.57.0",
     "preact": "11.1.0",
     "valibot": "1.5.0",
     "ws": "8.22.0"

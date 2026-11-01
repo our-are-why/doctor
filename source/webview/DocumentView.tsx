@@ -1,14 +1,27 @@
+import type { ComponentChildren } from "preact";
 import type { _Block_Document_, _Document_Doctor_, _ListItem_Document_ } from "../shared/domain.next.ts";
-import { EditableCode } from "./EditableCode.tsx";
-import { EditableText, type _Tag_Editable_ } from "./EditableText.tsx";
 import styles from "./styles/Document.module.css";
+import { TextView } from "./TextView.tsx";
 
-const headingTags: Array<_Tag_Editable_> = ["h2", "h3", "h4", "h5", "h6"];
+function Heading({ depth, children }: { depth: number; children: ComponentChildren }) {
+  switch (Math.min(depth, 5)) {
+    case 1:
+      return <h2 className={styles.heading}>{children}</h2>;
+    case 2:
+      return <h3 className={styles.heading}>{children}</h3>;
+    case 3:
+      return <h4 className={styles.heading}>{children}</h4>;
+    case 4:
+      return <h5 className={styles.heading}>{children}</h5>;
+    default:
+      return <h6 className={styles.heading}>{children}</h6>;
+  }
+}
 
 function ItemView({ item, depth }: { item: _ListItem_Document_; depth: number }) {
   return (
     <li>
-      <EditableText spot={{ kind: "node", node: item.id }} text={item} tag="div" className="" placeholder="" />
+      <TextView text={item} />
       <Blocks blocks={item.children} depth={depth} />
     </li>
   );
@@ -19,25 +32,17 @@ function BlockView({ block, depth }: { block: _Block_Document_; depth: number })
     case "section":
       return (
         <section className={styles.section}>
-          <EditableText
-            spot={{ kind: "node", node: block.id }}
-            text={block.heading}
-            tag={headingTags[Math.min(depth, headingTags.length) - 1] ?? "h6"}
-            className={styles.heading}
-            placeholder="Heading"
-          />
+          <Heading depth={depth}>
+            <TextView text={block.heading} />
+          </Heading>
           <Blocks blocks={block.children} depth={depth + 1} />
         </section>
       );
     case "paragraph":
       return (
-        <EditableText
-          spot={{ kind: "node", node: block.id }}
-          text={block}
-          tag="p"
-          className={styles.paragraph}
-          placeholder=""
-        />
+        <p className={styles.paragraph}>
+          <TextView text={block} />
+        </p>
       );
     case "list": {
       const items = block.children.map((item) => <ItemView key={item.id} item={item} depth={depth} />);
@@ -53,7 +58,9 @@ function BlockView({ block, depth }: { block: _Block_Document_; depth: number })
           {block.language.kind === "stated" ? (
             <figcaption className={styles.language}>{block.language.name}</figcaption>
           ) : null}
-          <EditableCode block={block} />
+          <pre>
+            <code>{block.code}</code>
+          </pre>
         </figure>
       );
     case "quote":
@@ -75,19 +82,14 @@ function Blocks({ blocks, depth }: { blocks: Array<_Block_Document_>; depth: num
   );
 }
 
+// the document rendered for reading; it's edited in doctor's text editor
 export function DocumentView({ document }: { document: _Document_Doctor_ }) {
   return (
     <article className={styles.document}>
-      <EditableText
-        spot={{ kind: "title" }}
-        text={document.content.title}
-        tag="h1"
-        className={styles.title}
-        placeholder="Untitled"
-      />
-      {document.content.children.length === 0 ? (
-        <p className={styles.hint}>Press Enter in the title to start writing.</p>
-      ) : null}
+      <h1 className={styles.title}>
+        <TextView text={document.content.title} />
+      </h1>
+      {document.content.children.length === 0 ? <p className={styles.hint}>This document is empty.</p> : null}
       <Blocks blocks={document.content.children} depth={1} />
     </article>
   );

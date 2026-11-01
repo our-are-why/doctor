@@ -10,10 +10,16 @@
   "contributes": {
     "customEditors": [
       {
-        "viewType": "doctor.document",
-        "displayName": "doctor document",
+        "viewType": "doctor.text",
+        "displayName": "doctor editor",
         "selector": [{ "filenamePattern": "*.doctor.json" }],
         "priority": "default"
+      },
+      {
+        "viewType": "doctor.document",
+        "displayName": "doctor reading view",
+        "selector": [{ "filenamePattern": "*.doctor.json" }],
+        "priority": "option"
       }
     ],
     "configuration": {
