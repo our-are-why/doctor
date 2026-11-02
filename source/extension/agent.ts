@@ -131,6 +131,7 @@ function holdUp(tasks: Array<_Task_Doctor_>): string {
 // given its turn, and what wakes the waits to look again.
 let waiting = 0;
 let handedOut: Array<number> = [];
+let lastWaited: Array<number> = [];
 let sleepers: Array<() => void> = [];
 
 // a wait answers within this long, well inside how long an HTTP client waits
@@ -141,12 +142,35 @@ const longestWait = 50_000;
 // it comes back to wait sooner
 const workingFor = 15 * 60_000;
 
+// an agent whose wait ended without a turn is still taken to be waiting for
+// this long: the CLI asks again at once, and between two of its requests
+// nobody is waiting for a moment
+const between = 5_000;
+
 export type _Presence_Agent_ = "waiting" | "working" | "away";
 
 export function presence(): _Presence_Agent_ {
-  if (waiting > 0) return "waiting";
+  const [waited] = lastWaited;
+  if (waiting > 0 || (waited !== undefined && Date.now() - waited < between)) return "waiting";
   const [given] = handedOut;
   return given !== undefined && Date.now() - given < workingFor ? "working" : "away";
+}
+
+// Whoever wants to know when the agent's presence changes, told only when
+// what presence() answers is different, rechecked once the times above run
+// out.
+let listeners: Array<() => void> = [];
+let told: _Presence_Agent_ = "away";
+
+export function whenPresenceChanges(listener: () => void): void {
+  listeners = [listener];
+}
+
+function presenceMayHaveChanged(): void {
+  const now = presence();
+  if (now === told) return;
+  told = now;
+  for (const listener of listeners) listener();
 }
 
 // every wait looks again at whose turn it is: called whenever the tasks change
@@ -172,6 +196,7 @@ async function waitForTurn(place: _Place_Tasks_, wanted: number) {
   const until = Date.now() + Math.min(wanted, longestWait);
   waiting += 1;
   handedOut = [];
+  presenceMayHaveChanged();
   try {
     for (;;) {
       const woken = new Promise<void>((resolve) => sleepers.push(resolve));
@@ -187,6 +212,11 @@ async function waitForTurn(place: _Place_Tasks_, wanted: number) {
     }
   } finally {
     waiting -= 1;
+    // handed its turn, the agent is working until that runs out; otherwise
+    // it has a moment to ask again before it counts as away
+    lastWaited = handedOut.length === 0 ? [Date.now()] : [];
+    setTimeout(presenceMayHaveChanged, (handedOut.length === 0 ? between : workingFor) + 100);
+    presenceMayHaveChanged();
   }
 }
 

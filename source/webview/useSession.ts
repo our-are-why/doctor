@@ -9,6 +9,7 @@ import type {
 } from "../shared/domain.next.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
 import type {
+  _Active_Status_,
   _Open_Proposal_,
   _Token_Endpoint_,
   _Url_Endpoint_,
@@ -68,6 +69,9 @@ export interface _Session_Webview_ {
   addRequest: (targets: Array<_Target_Request_>, text: string) => void;
   start: (task: _Id_Task_) => void;
   stopDrafting: () => void;
+  // the active task, if any: whose turn it is, and where the agent is
+  active: Array<_Active_Status_>;
+  copyPrompt: () => void;
 }
 
 type _Due_Editor_ = "waiting" | "due";
@@ -90,6 +94,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const [arrivals, setArrivals] = useState(0);
   const [open, setOpen] = useState<Array<_Open_Proposal_>>([]);
   const [drafting, setDrafting] = useState<Array<_View_Drafting_>>([]);
+  const [active, setActive] = useState<Array<_Active_Status_>>([]);
   const [openProblems, setOpenProblems] = useState<Array<string>>([]);
   const timer = useRef(0);
 
@@ -120,6 +125,10 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     }
     if (message.kind === "focus") {
       setDrafting(message.drafting);
+      return;
+    }
+    if (message.kind === "status") {
+      setActive(message.active);
       return;
     }
     const current = loadRef.current;
@@ -187,6 +196,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const addRequest = (targets: Array<_Target_Request_>, text: string) => send({ kind: "request", text, targets });
   const start = (task: _Id_Task_) => send({ kind: "activate", task });
   const stopDrafting = () => send({ kind: "unfocus" });
+  const copyPrompt = () => send({ kind: "copyPrompt" });
 
   return {
     load,
@@ -204,5 +214,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     addRequest,
     start,
     stopDrafting,
+    active,
+    copyPrompt,
   };
 }

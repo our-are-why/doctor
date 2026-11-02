@@ -17,6 +17,7 @@ import {
   endpointUrlSchema,
   focusDraftingSchema,
   tokenSchema,
+  type _Active_Status_,
   type _CHANGE_Message__Client_,
   type _FORGET_Message__Client_,
   type _Focus_Drafting_,
@@ -33,7 +34,7 @@ import { createDocument, makeChange } from "./changes.ts";
 import { registerDashboardSerializer, showDashboard } from "./dashboard.ts";
 import { documentViewType, registerDocumentEditor, textViewType } from "./documentEditor.ts";
 import { documentSuffix, newDocument, readDocument } from "./documents.ts";
-import { presence, serveAgent, wake } from "./agent.ts";
+import { presence, serveAgent, wake, whenPresenceChanges } from "./agent.ts";
 import { mintToken, startEndpoint, type _Connect_Endpoint_, type _Serve_Endpoint_ } from "./endpoint.ts";
 import {
   accept,
@@ -183,20 +184,15 @@ function openProposals(tasks: Array<_Task_Doctor_>, file: string): Array<_Open_P
 const agentPrompt =
   "Work on doctor's tasks: run `doctor help` once, then run `doctor wait`, do the step it gives you, and run `doctor wait` again.";
 
-// the agent's turn last told about, so a turn nobody's waiting for is told once
-let reminded = "";
-
-function remind(tasks: Array<_Task_Doctor_>): void {
-  const [task] = agentsTurn(tasks);
-  if (task === undefined) return;
-  const turn = [task.id, ...task.proposals.map((proposal) => `${proposal.id}:${proposal.state}:${proposal.rounds.length}`)].join(" ");
-  if (turn === reminded || presence() !== "away") return;
-  reminded = turn;
-  void vscode.window
-    .showInformationMessage(`doctor: task ${task.id} is the agent's turn, and no agent is waiting for it.`, "Copy what to tell your agent")
-    .then((picked) => {
-      if (picked !== undefined) void vscode.env.clipboard.writeText(agentPrompt);
-    });
+// the active task as an editor's bar shows it: whose turn it is, and where
+// the agent is
+function statusOf(tasks: Array<_Task_Doctor_>): Array<_Active_Status_> {
+  const agents = agentsTurn(tasks).map((task) => task.id);
+  return tasks.flatMap((task): Array<_Active_Status_> =>
+    task.state === "working" || task.state === "reviewing"
+      ? [{ task: task.id, name: nameOf(task), state: task.state, turn: agents.includes(task.id) ? "agent" : "human", agent: presence() }]
+      : [],
+  );
 }
 
 // tells every view what changed in the tasks, and any agent waiting its turn
@@ -213,10 +209,18 @@ async function announce(problems: Array<string>, to: Array<_Send_Session_>): Pro
     for (const send of sends) {
       send({ kind: "proposals", file, open: openProposals(tasks, file), problems: to.includes(send) ? problems : [] });
       send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
+      send({ kind: "status", file, active: statusOf(tasks) });
     }
   }
   wake();
-  remind(tasks);
+}
+
+// tells every editor the agent's presence changed, and nothing else
+async function tellStatus(): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const active = statusOf(await listTasks(place));
+  for (const [file, sends] of viewers) for (const send of sends) send({ kind: "status", file, active });
 }
 
 const serve: _Serve_Endpoint_ = async (caller, request) => {
@@ -385,6 +389,7 @@ async function open(file: string, send: _Send_Session_): Promise<void> {
   const tasks = await listTasks(place);
   send({ kind: "proposals", file, open: openProposals(tasks, file), problems: [] });
   send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
+  send({ kind: "status", file, active: statusOf(tasks) });
 }
 
 async function change(caller: _Author_Doctor_, message: _CHANGE_Message__Client_, send: _Send_Session_) {
@@ -481,6 +486,9 @@ const connect: _Connect_Endpoint_ = (caller, send) => {
         case "discard":
           if (caller === "human") void discard(message.task, send);
           return;
+        case "copyPrompt":
+          if (caller === "human") void vscode.env.clipboard.writeText(agentPrompt);
+          return;
       }
     },
     close: () => {
@@ -529,6 +537,7 @@ function keptPorts(context: vscode.ExtensionContext): Array<number> {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   memories = [context.workspaceState];
+  whenPresenceChanges(() => void tellStatus());
   const kept = parse(v.array(focusDraftingSchema), context.workspaceState.get("doctor.drafting"));
   drafting = kept.kind === "parsed" ? kept.value : [];
   const tokens = { human: mintToken(), agent: agentToken(context) };

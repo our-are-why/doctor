@@ -58,7 +58,8 @@ export type _Message_Client_ =
   | _FORGET_Message__Client_
   | _FOCUS_Message__Client_
   | _UNFOCUS_Message__Client_
-  | _DISCARD_Message__Client_;
+  | _DISCARD_Message__Client_
+  | _COPY_PROMPT_Message__Client_;
 
 interface __BASE_Message__Client_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -137,6 +138,9 @@ export interface _DISCARD_Message__Client_ extends __BASE_Message__Client_<"disc
   task: _Id_Task_;
 }
 
+// puts what to tell an agent about doctor on the clipboard
+export interface _COPY_PROMPT_Message__Client_ extends __BASE_Message__Client_<"copyPrompt"> {}
+
 export interface _PARK_Message__Client_ extends __BASE_Message__Client_<"park"> {
   task: _Id_Task_;
 }
@@ -173,6 +177,7 @@ export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v
   v.strictObject({ kind: v.literal("focus"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("unfocus") }),
   v.strictObject({ kind: v.literal("discard"), task: taskIdSchema }),
+  v.strictObject({ kind: v.literal("copyPrompt") }),
   v.strictObject({ kind: v.literal("park"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("complete"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("cancel"), task: taskIdSchema }),
@@ -193,7 +198,8 @@ export type _Message_Server_ =
   | _REFUSED_Message__Server_
   | _PROPOSALS_Message__Server_
   | _TASKS_Message__Server_
-  | _FOCUS_Message__Server_;
+  | _FOCUS_Message__Server_
+  | _STATUS_Message__Server_;
 
 interface __BASE_Message__Server_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -250,6 +256,21 @@ export interface _TASKS_Message__Server_ extends __BASE_Message__Server_<"tasks"
   documents: Array<_Listed_Document_>;
   drafting: Array<_Focus_Drafting_>;
   problems: Array<string>;
+}
+
+// the active task, if any, as an editor's bar shows it: whose turn it is,
+// and whether an agent is waiting, working or away
+export interface _STATUS_Message__Server_ extends __BASE_Message__Server_<"status"> {
+  file: string;
+  active: Array<_Active_Status_>;
+}
+
+export interface _Active_Status_ {
+  task: _Id_Task_;
+  name: string;
+  state: "working" | "reviewing";
+  turn: "agent" | "human";
+  agent: "waiting" | "working" | "away";
 }
 
 // what's being drafted, if anything: a task not made yet, before its first
@@ -321,6 +342,19 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
     documents: v.array(v.strictObject({ document: documentIdSchema, title: v.string(), path: v.string() })),
     drafting: v.array(focusDraftingSchema),
     problems: v.array(v.string()),
+  }),
+  v.strictObject({
+    kind: v.literal("status"),
+    file: v.string(),
+    active: v.array(
+      v.strictObject({
+        task: taskIdSchema,
+        name: v.string(),
+        state: v.picklist(["working", "reviewing"]),
+        turn: v.picklist(["agent", "human"]),
+        agent: v.picklist(["waiting", "working", "away"]),
+      }),
+    ),
   }),
   v.strictObject({
     kind: v.literal("focus"),

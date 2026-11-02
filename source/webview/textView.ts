@@ -17,12 +17,12 @@ import type {
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
 import { parseOwn } from "../shared/parse.ts";
-import { contentStart, project, startsBlock } from "../shared/projection.ts";
+import { contentStart, project, startsBlock, type _Projection_ } from "../shared/projection.ts";
 import { realize } from "../shared/proposals.ts";
 import type { _Open_Proposal_, _Verdict_Review_, _View_Drafting_ } from "../shared/protocol.ts";
 import { changeIdSchema, nodeIdSchema, offsetSchema } from "../shared/schema.ts";
 import { readTarget, writeTarget } from "../shared/target.ts";
-import { lengthOf, relink, segmentsOf, toggleContrast, type _Segment_Text_ } from "../shared/text.ts";
+import { compareTexts, lengthOf, relink, segmentsOf, toggleContrast, type _Change_Text_, type _Segment_Text_ } from "../shared/text.ts";
 import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
 import * as monaco from "./monaco.ts";
 import "./styles/monaco.css";
@@ -40,6 +40,9 @@ export interface _Hooks_View_ {
   addRequest: (targets: Array<_Target_Request_>, text: string) => void;
   stopDrafting: () => void;
   review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
+  // where the line numbers start, from the editor's left, for the bar above
+  // to start its words there too
+  numbers: (left: number) => void;
 }
 
 export interface _View_Text_ {
@@ -51,6 +54,8 @@ export interface _View_Text_ {
   focus: (drafting: Array<_View_Drafting_>) => void;
   // the form for a request about the whole document, docked under the bar
   requestForDocument: (route: _Route_Form_) => void;
+  // scrolls to the first proposal waiting for review
+  revealProposals: () => void;
   dispose: () => void;
 }
 
@@ -161,7 +166,8 @@ interface _Piece_Mark_ {
 }
 
 // In the editor a quote's >s take no room, its bar drawn in the margin
-// beside them; where there's no margin, as in a proposal's lines, they show.
+// beside them; in a proposal's lines they show as well, so it's plain what
+// stays quoted.
 type _Quotes_Mark_ = "collapsed" | "shown";
 
 function markPieces(content: string, quotes: _Quotes_Mark_): Array<_Piece_Mark_> {
@@ -228,6 +234,39 @@ const fenceLanguages: Array<[string, string]> = [
 const segmentClass = (segment: _Segment_Text_) =>
   [...segment.contrast.map((contrast) => styles[contrast]), ...(segment.links.length > 0 ? [styles.link] : [])].join(" ");
 
+// the colour a proposal boxes words in for what happens to them
+const changeClass: Record<_Change_Text_["kind"], string> = {
+  removed: styles.removedWords,
+  replaced: styles.replacedWords,
+  inserted: styles.insertedWords,
+  restyled: styles.restyledWords,
+};
+
+// A line a proposal shows: as it's written, with the text it holds and where
+// that starts, for its marks to be drawn as the document's are, how that
+// text changes, when it's one the proposal changes in place, and a note on
+// it, if there's one.
+interface _Line_Proposal_ {
+  content: string;
+  texts: Array<{ start: number; text: _Text_Doctor_ }>;
+  changes: Array<_Change_Text_>;
+  note: string;
+}
+
+const plainLine = (content: string): _Line_Proposal_ => ({ content, texts: [], changes: [], note: "" });
+
+// A zone a proposal makes among the lines: what it shows and beside it in
+// the margin, the overlay kept level with it, and what's told where Monaco
+// put it, so it can grow.
+interface _Zone_Proposal_ {
+  after: number;
+  node: HTMLElement;
+  margin: Array<HTMLElement>;
+  lines: number;
+  level: Array<HTMLElement>;
+  placed: Array<(zone: monaco.editor.IViewZone, id: string) => void>;
+}
+
 // Where the request form is: inline among the lines of the selection it's
 // about, or docked under the editor's bar when it's about the whole document.
 type _Placement_Form_ = _INLINE_Placement__Form_ | _DOCKED_Placement__Form_;
@@ -271,6 +310,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     folding: false,
     glyphMargin: false,
     scrollBeyondLastLine: false,
+    // room below the last line, as the bar gives above the first
+    padding: { bottom: 24 },
+    stickyScroll: { enabled: true, defaultModel: "foldingProviderModel" },
     quickSuggestions: false,
     suggestOnTriggerCharacters: false,
     wordBasedSuggestions: "off",
@@ -288,6 +330,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   const styling = editor.createDecorationsCollection();
   const proposal = editor.createDecorationsCollection();
   let zones: Array<string> = [];
+  const structureChanged = new monaco.Emitter<monaco.languages.FoldingRangeProvider>();
 
   // the node each line holds: the line its tracking decoration starts on,
   // preferring one that still covers something, then the leftmost
@@ -331,6 +374,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         return entry === undefined ? [] : [[decoration, entry.id]];
       }),
     );
+    structureChanged.fire(structure);
   };
 
   const holderAt = (line: number, owners: Array<Array<_Id_Node_>>): Array<_Holder_Text_> =>
@@ -344,6 +388,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
 
   const decorate = (document: _Document_Doctor_) => {
     documents = [document];
+    structureChanged.fire(structure);
     const owners = ownersNow();
     const index = indexNodes(document.content);
     const decorations: Array<monaco.editor.IModelDeltaDecoration> = [];
@@ -363,6 +408,14 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       }
     };
     const selections = editor.getSelections() ?? [];
+    // A line a proposal would change shows its quote's >s, as its preview
+    // does, so what changes and what stays reads plainly between the two.
+    // Its decorations move with edits, so they say which lines those are.
+    const targeted = new Set(proposal.getRanges().map((range) => range.startLineNumber));
+    const quoteMarks = (line: number, to: number) => {
+      if (targeted.has(line)) inline(line, 0, to, styles.mark);
+      else collapse(line, to);
+    };
     // a line's marks show as they're written while the caret is in them
     const marks = (line: number, content: string, start: number) => {
       const prefix = new monaco.Range(line, 1, line, start + 1);
@@ -370,7 +423,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         inline(line, 0, start, styles.mark);
         return;
       }
-      for (const each of markPieces(content, "collapsed")) {
+      for (const each of markPieces(content, targeted.has(line) ? "shown" : "collapsed")) {
         decorations.push({
           range: new monaco.Range(line, each.from + 1, line, each.to + 1),
           options: { inlineClassName: each.className, inlineClassNameAffectsLetterSpacing: each.spacing === "changes" },
@@ -382,14 +435,18 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       const line = at + 1;
       // A quote's lines, the blank ones between its blocks and its code's
       // too, carry its bar in the margin, where wrapped rows can't run over
-      // it, and its >s take no room, so its text starts where any other
-      // does. Code's >s are hidden here, the rest's with the other marks.
+      // it, on the band code has, and its >s take no room, so its text
+      // starts where any other does. Code's >s are hidden here, the rest's
+      // with the other marks.
       const quote = /^(?:>+(?: |$))?/.exec(content)?.[0] ?? "";
-      if (quote.length > 0) margin(line, styles.quote);
+      if (quote.length > 0) {
+        margin(line, styles.quote);
+        whole(line, styles.quoted);
+      }
       if (code === "inside") {
         const closing = content.slice(quote.length) === "```";
         whole(line, closing ? styles.codeEnd : styles.code);
-        collapse(line, quote.length);
+        quoteMarks(line, quote.length);
         if (closing) {
           inline(line, quote.length, content.length, styles.fence);
           code = "outside";
@@ -401,7 +458,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       if (node?.kind === "code") {
         whole(line, styles.codeStart);
         const fence = quote.length + 3;
-        collapse(line, quote.length);
+        quoteMarks(line, quote.length);
         inline(line, quote.length, fence, styles.fence);
         inline(line, fence, content.length, styles.language);
         code = "inside";
@@ -446,6 +503,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     track(projection.owners);
     applying = "idle";
     decorate(document);
+    whenDrawn(tellNumbers);
     editor.setScrollTop(scroll);
     if (caret === undefined) return;
     const place = projection.places.find((each) =>
@@ -510,35 +568,55 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     previewCount += 1;
     return parseOwn(nodeIdSchema, `prev${previewCount.toString(36).padStart(6, "0")}`);
   };
-  const subtreeLines = (shown: _Document_Doctor_, node: _Node_Document_): Array<string> => {
+  // a projection's lines, from and up to the ones given, with their texts
+  const proposalLines = (document: _Document_Doctor_, projection: _Projection_, from: number, to: number): Array<_Line_Proposal_> =>
+    projection.lines.slice(from, to).map((content, at) => ({
+      content,
+      texts: projection.places
+        .filter((place) => place.line === from + at)
+        .flatMap((place) => textAt(document, place.holder).map((text) => ({ start: place.start, text }))),
+      changes: [],
+      note: "",
+    }));
+  const subtreeLines = (shown: _Document_Doctor_, node: _Node_Document_): Array<_Line_Proposal_> => {
     const block: _Block_Document_ = node.kind === "listItem" ? { kind: "list", id: previewId(), order: "unordered", children: [node] } : node;
-    return project({ ...shown, content: { title: { text: "", overlay: [] }, children: [block] }, notes: [] }).lines.slice(2);
+    const alone: _Document_Doctor_ = { ...shown, content: { title: { text: "", overlay: [] }, children: [block] }, notes: [] };
+    const projection = project(alone);
+    return proposalLines(alone, projection, 2, projection.lines.length);
   };
   const previewChange = parseOwn(changeIdSchema, "preview000");
 
   // A node's lines in the document as the proposal would leave it, so they
   // read as they will: a heading at its real level, under its quote's marks,
-  // at its list's depth, with what's moved into it. From the node's first
-  // line to the last before a line of something outside it.
+  // at its list's depth, with what's moved into it, its words marked as
+  // they'll be. From the node's first line to the last before a line of
+  // something outside it. And a text's own line, as it will be.
   const linesAfter = (shown: _Document_Doctor_, operations: Array<_Operation_Change_>) => {
     const applied = applyOperations(shown, operations, { document: shown.id, id: previewChange });
-    if (applied.kind === "refused") return (_node: _Id_Node_): Array<Array<string>> => [];
+    if (applied.kind === "refused") {
+      return { node: (_node: _Id_Node_): Array<Array<_Line_Proposal_>> => [], holder: (_holder: _Holder_Text_): Array<_Line_Proposal_> => [] };
+    }
     const projection = project(applied.document);
     const index = indexNodes(applied.document.content);
-    return (node: _Id_Node_): Array<Array<string>> => {
-      const entry = index.get(node);
+    const node = (id: _Id_Node_): Array<Array<_Line_Proposal_>> => {
+      const entry = index.get(id);
       if (entry === undefined) return [];
       const inside = new Set<string>(nodesWithin(entry.node).map((each) => each.id));
-      const start = projection.owners.findIndex((owner) => owner.some((id) => inside.has(id)));
+      const start = projection.owners.findIndex((owner) => owner.some((owned) => inside.has(owned)));
       if (start === -1) return [];
       let end = start;
       for (let at = start + 1; at < projection.lines.length; at += 1) {
         const owner = projection.owners[at] ?? [];
-        if (owner.length > 0 && !owner.some((id) => inside.has(id))) break;
+        if (owner.length > 0 && !owner.some((owned) => inside.has(owned))) break;
         if (!/^>*$/.test((projection.lines[at] ?? "").trim())) end = at;
       }
-      return [projection.lines.slice(start, end + 1)];
+      return [proposalLines(applied.document, projection, start, end + 1)];
     };
+    const holder = (wanted: _Holder_Text_): Array<_Line_Proposal_> =>
+      projection.places
+        .filter((place) => (place.holder.kind === "node" && wanted.kind === "node" ? place.holder.node === wanted.node : place.holder.kind === wanted.kind))
+        .flatMap((place) => proposalLines(applied.document, projection, place.line, place.line + 1));
+    return { node, holder };
   };
 
   // Monaco lays view zones beneath its lines of text, where clicks never
@@ -554,6 +632,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     for (const widget of headers) placeHeader(widget.getDomNode());
   });
 
+  // the line the first proposal's header is after, to scroll to
+  let proposalAt: Array<number> = [];
+
   const clearProposals = () => {
     editor.changeViewZones((accessor) => {
       for (const zone of zones) accessor.removeZone(zone);
@@ -561,19 +642,100 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     zones = [];
     for (const widget of headers) editor.removeOverlayWidget(widget);
     headers = [];
+    proposalAt = [];
     proposal.clear();
   };
 
+  // The line numbers' column: its right edge, where they're aligned, and a
+  // digit's width, measured on a number drawn, else worked out from Monaco's
+  // layout. A line's number starts a digit's width left of the edge for
+  // each digit it has.
+  const numberColumn = (): { right: number; digit: number } => {
+    const info = editor.getLayoutInfo();
+    const font = editor.getOption(monaco.editor.EditorOption.fontInfo);
+    const estimate = { right: info.lineNumbersLeft + info.lineNumbersWidth, digit: font.maxDigitWidth };
+    const [number] = [...host.querySelectorAll(".line-numbers")].filter((each) => (each.textContent ?? "").trim() !== "");
+    if (number === undefined) return estimate;
+    const range = window.document.createRange();
+    range.selectNodeContents(number);
+    const box = range.getBoundingClientRect();
+    const drawn = (number.textContent ?? "").trim().length;
+    return box.width === 0 ? estimate : { right: box.right - host.getBoundingClientRect().left, digit: box.width / drawn };
+  };
+  const numberLeft = (column: { right: number; digit: number }, line: number) => column.right - String(line).length * column.digit;
+
+  // the document's lines drawn again for the proposals now shown
+  const redecorate = () => {
+    const [document] = documents;
+    if (document !== undefined) decorate(document);
+  };
+
+  // the proposals shown, drawn again when the lines' width changes, as what
+  // they add wraps with it
+  let showing: Array<_Open_Proposal_> = [];
+  let drawnWidth = 0;
+  editor.onDidLayoutChange((info) => {
+    if (showing.length > 0 && info.contentWidth !== drawnWidth) showProposals(showing);
+  });
+
   // Proposals waiting for review, shown where they'd change the document:
-  // what they'd take away struck through, what they'd add beneath, and above
-  // each one its task's instruction and what you can do with it.
+  // what they'd take away struck through, what they'd add beneath, and under
+  // each one its task's instruction and what you can do with it. What one
+  // changes in the document is marked in the margin too, from where its
+  // line's number starts, as what it adds is, so the lines it's about read
+  // as one block with its actions closing it.
   const showProposals = (open: Array<_Open_Proposal_>) => {
     clearProposals();
+    showing = open;
+    drawnWidth = editor.getLayoutInfo().contentWidth;
     const [shown] = documents;
-    if (shown === undefined || open.length === 0) return;
+    if (shown === undefined || open.length === 0) {
+      redecorate();
+      return;
+    }
     const owners = ownersNow();
     const index = indexNodes(shown.content);
     const height = editor.getOption(monaco.editor.EditorOption.lineHeight);
+    // where each added line is, wrapped at the width the editor's lines are,
+    // laid out out of sight to be measured
+    const boxesOf = (node: HTMLElement): Array<{ top: number; height: number }> => {
+      node.style.position = "absolute";
+      node.style.visibility = "hidden";
+      node.style.width = `${drawnWidth}px`;
+      host.append(node);
+      const boxes = [...node.children].flatMap((line) => (line instanceof HTMLElement ? [{ top: line.offsetTop, height: line.offsetHeight }] : []));
+      node.remove();
+      for (const property of ["position", "visibility", "width"]) node.style.removeProperty(property);
+      return boxes;
+    };
+    // beside what's added, in the margin: its band and bar from where the
+    // number of the line it's under starts, and a quote's bar where the
+    // editor draws one
+    const column = numberColumn();
+    host.style.setProperty("--numbers-right", `${column.right}px`);
+    host.style.setProperty("--digit", `${column.digit}px`);
+    const digits = [styles.digits1, styles.digits2, styles.digits3, styles.digits4, styles.digits5];
+    const gutter = (line: number, className: string) => `${className} ${digits[Math.min(String(line).length, digits.length) - 1] ?? ""}`;
+    const actionsMargin = (after: number) => {
+      const margin = element("div", styles.proposalActionsMargin, "");
+      margin.style.setProperty("--left", `${numberLeft(column, Math.max(after, 1))}px`);
+      return margin;
+    };
+    const marginOf = (after: number, lines: Array<_Line_Proposal_>, boxes: Array<{ top: number; height: number }>) => {
+      const margin = element("div", styles.proposalMargin, "");
+      margin.style.setProperty("--left", `${numberLeft(column, Math.max(after, 1))}px`);
+      const lane = editor.getLayoutInfo().decorationsLeft;
+      lines.forEach((line, at) => {
+        const box = boxes[at];
+        if (box === undefined || !line.content.startsWith(">")) return;
+        const bar = element("div", styles.proposalQuote, "");
+        bar.style.left = `${lane + 3}px`;
+        bar.style.top = `${box.top}px`;
+        bar.style.height = `${box.height}px`;
+        margin.append(bar);
+      });
+      return margin;
+    };
     const lineOf = (node: _Id_Node_) => owners.findIndex((owner) => owner.includes(node)) + 1;
     // a node's first line: its own, or a list's or a quote's first child's
     const startOf = (node: _Id_Node_): number => {
@@ -623,83 +785,211 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       made.textContent = content;
       return made;
     };
-    // each line with its markers drawn as the editor draws them
-    const linesZone = (lines: Array<string>) => {
+    // each line with its markers drawn as the editor draws them, a quote's
+    // >s too, and its words marked as they'll be
+    const linesZone = (lines: Array<_Line_Proposal_>) => {
       const zone = element("div", styles.proposalAdded, "");
-      for (const line of lines) {
+      for (const { content, texts, changes, note } of lines) {
         const shownLine = element("div", styles.proposalLine, "");
         let at = 0;
-        for (const piece of markPieces(line, "shown")) {
-          shownLine.append(line.slice(at, piece.from), element("span", piece.className, line.slice(piece.from, piece.to)));
+        for (const piece of markPieces(content, "shown")) {
+          shownLine.append(content.slice(at, piece.from), element("span", piece.className, content.slice(piece.from, piece.to)));
           at = piece.to;
         }
-        shownLine.append(line === "" ? " " : line.slice(at));
-        shownLine.style.height = `${height}px`;
+        const [held] = texts;
+        const body = held === undefined || held.start < at ? "" : content.slice(held.start);
+        if (held !== undefined && body !== "" && body === held.text.text) {
+          shownLine.append(content.slice(at, held.start));
+          // each stretch under one set of marks, cut where a change starts
+          // or ends, and a change's stretches boxed together, so one box
+          // spans words under different marks
+          let box: Array<{ change: _Change_Text_; node: HTMLElement }> = [];
+          for (const segment of segmentsOf(held.text)) {
+            const inside = changes.flatMap((change) => [change.from, change.to]).filter((cut) => cut > segment.from && cut < segment.to);
+            const cuts = [...new Set([segment.from, ...inside, segment.to])].toSorted((first, second) => first - second);
+            cuts.slice(1).forEach((to, index) => {
+              const from = cuts[index] ?? segment.from;
+              const stretch = element("span", segmentClass(segment), body.slice(unitsOf(body, from), unitsOf(body, to)));
+              const [change] = changes.filter((each) => each.from <= from && each.to >= to);
+              const [open] = box;
+              if (change === undefined) {
+                box = [];
+                shownLine.append(stretch);
+              } else if (open !== undefined && open.change === change) {
+                open.node.append(stretch);
+              } else {
+                const node = element("span", changeClass[change.kind], "");
+                node.append(stretch);
+                shownLine.append(node);
+                box = [{ change, node }];
+              }
+            });
+          }
+          at = content.length;
+        }
+        shownLine.append(content === "" && note === "" ? " " : content.slice(at));
+        if (note !== "") shownLine.append(element("span", styles.mark, content === "" ? `(${note})` : `  (${note})`));
+        // wrapped, it goes on under its first character, as the editor's lines do
+        const indent = (/^ */.exec(content)?.[0] ?? "").length;
+        shownLine.style.paddingLeft = `${indent}ch`;
+        shownLine.style.textIndent = `-${indent}ch`;
         shownLine.style.lineHeight = `${height}px`;
         zone.append(shownLine);
       }
       return zone;
     };
     const widgets: Array<monaco.editor.IOverlayWidget> = [];
-    const header = (item: _Open_Proposal_) => {
-      const zone = element("div", styles.proposalHeader, "");
+    // A proposal's actions, under it: Accept, Reject and Request changes on
+    // the right. Requesting changes opens a form under them for what should
+    // change, its zone growing to make room, and with what's written.
+    const actionLines = 2;
+    const actions = (item: _Open_Proposal_) => {
+      const zone = element("div", styles.proposalActions, "");
       zone.style.top = "-1000px";
       placeHeader(zone);
       widgets.push({ getId: () => `doctor.proposal.${item.proposal}`, getDomNode: () => zone, getPosition: () => null });
-      const feedback = window.document.createElement("input");
-      feedback.className = styles.proposalInput;
-      feedback.placeholder = "what should change…";
+      const row = element("div", styles.proposalRow, "");
+      row.style.height = `${actionLines * height}px`;
       const accept = element("button", styles.proposalAccept, "Accept");
       const reject = element("button", styles.proposalButton, "Reject");
       const request = element("button", styles.proposalButton, "Request changes");
+      row.append(accept, reject, request);
+      zone.append(row);
+
+      const form = element("div", styles.changesForm, "");
+      const input = window.document.createElement("textarea");
+      input.className = styles.changesInput;
+      input.rows = 1;
+      input.placeholder = "What should change in this proposal?";
+      const font = editor.getOption(monaco.editor.EditorOption.fontInfo);
+      input.style.fontFamily = font.fontFamily;
+      input.style.fontSize = `${font.fontSize}px`;
+      input.style.lineHeight = `${font.lineHeight}px`;
+      const cancel = element("button", styles.proposalButton, "Cancel");
+      const send = element("button", styles.proposalAccept, "Submit");
+      const formRow = element("div", styles.taskRow, "");
+      formRow.append(element("span", styles.taskHint, "sent back to the agent with this proposal"), cancel, send);
+      form.append(input, formRow);
+
+      let room: Array<{ zone: monaco.editor.IViewZone; id: string }> = [];
+      const fit = () => {
+        const [placed] = room;
+        if (placed === undefined) return;
+        input.style.height = "auto";
+        input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
+        const lines = actionLines + (form.isConnected ? Math.ceil(form.offsetHeight / height) : 0);
+        if (placed.zone.heightInLines === lines) return;
+        placed.zone.heightInLines = lines;
+        editor.changeViewZones((accessor) => accessor.layoutZone(placed.id));
+        // Monaco scrolls to show all of the form, so the field taking the
+        // focus never scrolls the page instead
+        whenDrawn(() => {
+          const bottom = Number.parseFloat(zone.style.top) + lines * height;
+          const shown = editor.getLayoutInfo().height;
+          if (bottom > shown) editor.setScrollTop(editor.getScrollTop() + bottom - shown);
+        });
+      };
+      const open = () => {
+        if (!form.isConnected) zone.append(form);
+        fit();
+        whenDrawn(() => input.focus({ preventScroll: true }));
+      };
+      const close = () => {
+        form.remove();
+        input.value = "";
+        fit();
+        editor.focus();
+      };
       const requestChanges = () => {
-        const written = feedback.value.trim();
+        const written = input.value.trim();
         if (written === "") {
-          feedback.focus();
+          input.focus();
           return;
         }
         hooks.review(item.task, item.proposal, { kind: "request", feedback: written });
       };
       accept.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "accept" }));
-      reject.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "reject", reason: feedback.value.trim() }));
-      request.addEventListener("click", requestChanges);
-      feedback.addEventListener("keydown", (event) => {
+      reject.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "reject", reason: "" }));
+      request.addEventListener("click", open);
+      cancel.addEventListener("click", close);
+      send.addEventListener("click", requestChanges);
+      input.addEventListener("input", fit);
+      input.addEventListener("keydown", (event) => {
         event.stopPropagation();
-        if (event.key === "Enter") requestChanges();
+        if (event.key === "Escape") close();
+        if (event.key !== "Enter" || event.shiftKey) return;
+        event.preventDefault();
+        requestChanges();
       });
-      zone.append(element("span", styles.proposalTitle, `proposal · ${item.instruction}`), accept, reject, feedback, request);
-      return zone;
+      const placed = (placedZone: monaco.editor.IViewZone, id: string) => {
+        room = [{ zone: placedZone, id }];
+      };
+      return { node: zone, placed };
     };
-    const added: Array<{ after: number; node: HTMLElement; lines: number; level: Array<HTMLElement> }> = [];
+    const added: Array<_Zone_Proposal_> = [];
     const struck: Array<monaco.editor.IModelDeltaDecoration> = [];
+    // the lowest line the proposal being drawn reaches, its actions going under it
+    let reached: Array<number> = [];
+    // A line whose text the proposal changes in place: yellow, its words
+    // boxed for what happens to them, as its new version's beneath are. No
+    // strikethrough, underline or highlight: a document's own marks use
+    // those. Each box is drawn behind the line's text, so one box spans words
+    // under different marks.
+    const change = (line: number, start: number, body: string, changes: Array<_Change_Text_>) => {
+      reached.push(line);
+      struck.push({
+        range: new monaco.Range(line, 1, line, 1),
+        options: { isWholeLine: true, className: styles.changedLine, marginClassName: gutter(line, styles.changedGutter) },
+      });
+      for (const each of changes) {
+        const from = start + unitsOf(body, each.from);
+        const to = start + unitsOf(body, each.to);
+        if (to > from) struck.push({ range: new monaco.Range(line, from + 1, line, to + 1), options: { className: changeClass[each.kind] } });
+      }
+    };
     // what's moved away is dimmed where it is, not struck as if it went
     const dim = (from: number, to: number) => {
       for (let line = from; line <= to; line += 1) {
         const content = model.getLineContent(line);
-        struck.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className: styles.movedLine } });
+        reached.push(line);
+        struck.push({
+          range: new monaco.Range(line, 1, line, 1),
+          options: { isWholeLine: true, className: styles.movedLine, marginClassName: gutter(line, styles.movedGutter) },
+        });
         if (content.length > 0) struck.push({ range: new monaco.Range(line, 1, line, content.length + 1), options: { inlineClassName: styles.moved } });
       }
     };
-    const strike = (from: number, to: number, start: number) => {
+    const strike = (from: number, to: number) => {
       for (let line = from; line <= to; line += 1) {
-        const content = model.getLineContent(line);
-        struck.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className: styles.removedLine } });
-        const begin = line === from ? start : 0;
-        if (content.length > begin) {
-          struck.push({ range: new monaco.Range(line, begin + 1, line, content.length + 1), options: { inlineClassName: styles.removed } });
-        }
+        reached.push(line);
+        struck.push({
+          range: new monaco.Range(line, 1, line, 1),
+          options: {
+            isWholeLine: true,
+            className: styles.removedLine,
+            marginClassName: gutter(line, styles.removedGutter),
+            lineNumberClassName: styles.removedNumber,
+          },
+        });
       }
     };
     for (const item of open) {
+      reached = [];
+      // a text is shown once, as all the proposal's operations leave it
+      const changed = new Set<string>();
       const touched: Array<number> = [];
-      const pieces: Array<{ after: number; node: HTMLElement; lines: number; level: Array<HTMLElement> }> = [];
-      const add = (after: number, lines: Array<string>) => {
-        pieces.push({ after, node: linesZone(lines), lines: Math.max(lines.length, 1), level: [] });
+      const pieces: Array<_Zone_Proposal_> = [];
+      const add = (after: number, lines: Array<_Line_Proposal_>) => {
+        const node = linesZone(lines);
+        const boxes = boxesOf(node);
+        const rows = Math.max(Math.round(boxes.reduce((sum, box) => sum + box.height, 0) / height), 1);
+        pieces.push({ after, node, margin: [marginOf(after, lines, boxes)], lines: rows, level: [], placed: [] });
         touched.push(after + 1);
+        reached.push(after);
       };
       let last = 1;
       const operations = realize(item.operations, previewId);
-      const linesOf = linesAfter(shown, operations);
+      const previewed = linesAfter(shown, operations);
       // what goes into something this same proposal adds is shown within it
       const intoAdded = (at: _Position_Operation_) =>
         (at.parent.kind === "node" && !index.has(at.parent.node)) || (at.kind === "after" && !index.has(at.sibling));
@@ -716,18 +1006,34 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
               const first = quote === undefined ? 0 : startOf(quote);
               if (quote === undefined || first === 0 || operation.kind !== "write" || operation.text === "") break;
               const end = endOf(quote, first);
-              add(end, [`${quoteMarks(quote)}-- ${operation.text}`]);
+              const [reference = plainLine(`${quoteMarks(quote)}-- ${operation.text}`)] = previewed.holder(holder);
+              add(end, [reference]);
               last = end;
               break;
             }
+            const key = holder.kind === "title" ? "title" : holder.node;
+            if (changed.has(key)) break;
+            changed.add(key);
             const content = model.getLineContent(line);
             const start = contentStart(content);
-            if (operation.kind === "write") strike(line, line, start);
             touched.push(line);
-            if (quote === undefined || operation.kind !== "write" || operation.text !== "") {
-              add(line, [operation.kind === "write" ? `${content.slice(0, start)}${operation.text}` : `${content}  (restyled)`]);
-            }
             last = line;
+            const [before] = textAt(shown, holder);
+            const [after] = previewed.holder(holder);
+            const [held] = after?.texts ?? [];
+            // a quote's reference written away goes, as its line does
+            if (quote !== undefined && after === undefined) {
+              strike(line, line);
+              break;
+            }
+            if (before === undefined || after === undefined || held === undefined) {
+              strike(line, line);
+              add(line, [plainLine(operation.kind === "write" ? `${content.slice(0, start)}${operation.text}` : content)]);
+              break;
+            }
+            const changes = compareTexts(before, held.text);
+            change(line, start, content.slice(start), changes.before);
+            add(line, [{ ...after, changes: changes.after }]);
             break;
           }
           case "edit": {
@@ -736,10 +1042,13 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
             const end = endOf(operation.node, line);
             touched.push(line);
             if (operation.content.kind === "code") {
-              strike(line + 1, end - 1, 0);
-              add(end - 1, operation.content.code.split("\n"));
+              strike(line + 1, end - 1);
+              // its lines between the fences, under its quote's marks if it's in one
+              const [fenced] = previewed.node(operation.node);
+              add(end - 1, fenced === undefined ? operation.content.code.split("\n").map(plainLine) : fenced.slice(1, -1));
             } else {
-              add(line - 1, [`(this list becomes ${operation.content.order === "ordered" ? "numbered" : "bulleted"})`]);
+              const order = operation.content.order === "ordered" ? "numbered" : "bulleted";
+              add(line - 1, [{ content: "", texts: [], changes: [], note: `this list becomes ${order}` }]);
             }
             last = end;
             break;
@@ -748,7 +1057,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
             const line = startOf(operation.node);
             if (line === 0) break;
             const end = endOf(operation.node, line);
-            strike(line, end, 0);
+            strike(line, end);
             touched.push(line);
             last = end;
             break;
@@ -756,7 +1065,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
           case "insert": {
             if (intoAdded(operation.at)) break;
             const after = placeAfter(operation.at, last);
-            const [lines = subtreeLines(shown, operation.subtree)] = linesOf(operation.subtree.id);
+            const [lines = subtreeLines(shown, operation.subtree)] = previewed.node(operation.subtree.id);
             add(after, lines);
             last = after;
             break;
@@ -769,27 +1078,42 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
             touched.push(line);
             if (intoAdded(operation.to)) break;
             const after = placeAfter(operation.to, last);
-            const [lines = subtreeLines(shown, node)] = linesOf(operation.node);
-            add(after, lines.map((each, at) => (at === 0 ? `${each}  (moved here)` : each)));
+            const [lines = subtreeLines(shown, node)] = previewed.node(operation.node);
+            add(after, lines.map((each, at) => (at === 0 ? { ...each, note: "moved here" } : each)));
             last = after;
             break;
           }
         }
       }
       if (touched.length === 0) continue;
-      const room = element("div", "", "");
-      added.push({ after: Math.max(Math.min(...touched) - 1, 0), node: room, lines: 2, level: [header(item)] }, ...pieces);
+      const top = Math.max(Math.min(...touched) - 1, 0);
+      const [first] = proposalAt;
+      proposalAt = [first === undefined ? top : Math.min(first, top)];
+      const bottom = Math.max(...reached, top);
+      const made = actions(item);
+      added.push(...pieces, {
+        after: bottom,
+        // the band is the zone's, out to the editor's edge as what's added
+        // is; the actions over it stop short of the scrollbar
+        node: element("div", styles.proposalActionsBand, ""),
+        margin: [actionsMargin(bottom)],
+        lines: actionLines,
+        level: [made.node],
+        placed: [made.placed],
+      });
     }
     proposal.set(struck);
+    redecorate();
     headers = widgets;
     for (const widget of headers) editor.addOverlayWidget(widget);
     editor.changeViewZones((accessor) => {
-      // a header comes before what's added after the same line
-      zones = added.map((zone, at) =>
-        accessor.addZone({
+      // a proposal's actions come after what it adds after the same line
+      zones = added.map((zone, at) => {
+        const placed: monaco.editor.IViewZone = {
           afterLineNumber: zone.after,
           heightInLines: zone.lines,
           domNode: zone.node,
+          marginDomNode: zone.margin[0] ?? null,
           ordinal: at,
           suppressMouseDown: true,
           onDomNodeTop: (top) => {
@@ -798,8 +1122,11 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
           onComputedHeight: (computed) => {
             for (const node of zone.level) node.style.height = `${computed}px`;
           },
-        }),
-      );
+        };
+        const id = accessor.addZone(placed);
+        for (const told of zone.placed) told(placed, id);
+        return id;
+      });
     });
   };
 
@@ -815,6 +1142,44 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       (mark): mark is _LINK_Mark__Text_ => mark.kind === "link" && mark.from <= character && mark.to > character,
     );
   };
+
+  // Sticky scroll keeps a line in view while what it holds scrolls under it:
+  // a section's heading, a list item over the items under it, a code
+  // block's opening fence. Each spans the lines its node and the nodes in it
+  // hold, a code block's inner lines going with its fence; Monaco would
+  // otherwise go by indentation, which only list items have.
+  const spans = (): Array<monaco.languages.FoldingRange> => {
+    const [document] = documents;
+    if (document === undefined) return [];
+    const index = indexNodes(document.content);
+    const kinds = lineKinds();
+    const first = new Map<_Id_Node_, number>();
+    const last = new Map<_Id_Node_, number>();
+    const reach = (node: _Id_Node_, line: number) => {
+      last.set(node, line);
+      const parent = index.get(node)?.parent;
+      if (parent?.kind === "node") reach(parent.node, line);
+    };
+    let held: Array<_Id_Node_> = [];
+    ownersNow().forEach((owner, at) => {
+      if (owner.length > 0) held = owner;
+      for (const id of owner.length > 0 ? owner : kinds[at] === "code" ? held : []) {
+        if (!first.has(id)) first.set(id, at + 1);
+        reach(id, at + 1);
+      }
+    });
+    return [...first].flatMap(([id, start]): Array<monaco.languages.FoldingRange> => {
+      const node = index.get(id)?.node;
+      const end = last.get(id) ?? start;
+      const holds = node?.kind === "section" || node?.kind === "code" || (node?.kind === "listItem" && node.children.length > 0);
+      return holds && end > start ? [{ start, end }] : [];
+    });
+  };
+  const structure: monaco.languages.FoldingRangeProvider = {
+    onDidChange: structureChanged.event,
+    provideFoldingRanges: (asked) => (asked === model ? spans() : []),
+  };
+  const folds = monaco.languages.registerFoldingRangeProvider("doctor", structure);
 
   const hover = monaco.languages.registerHoverProvider("doctor", {
     provideHover: (hovered, position) => {
@@ -1247,28 +1612,20 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // document's lines are. Its purple line runs down the line numbers' left
   // edge, and its band starts there, with nothing left of it.
   const docked = ["padding-left", "padding-right", "box-shadow", "background-color", "background-image"];
-  // the digits' left edge, measured on the widest number drawn, else worked
-  // out from Monaco's layout, where they sit right-aligned in their column
-  const digitsLeft = (): number => {
-    const info = editor.getLayoutInfo();
-    const font = editor.getOption(monaco.editor.EditorOption.fontInfo);
-    const digits = String(model.getLineCount()).length;
-    const estimate = info.lineNumbersLeft + info.lineNumbersWidth - digits * font.maxDigitWidth;
-    let widest: Array<Element> = [];
-    for (const number of host.querySelectorAll(".line-numbers")) {
-      const [best] = widest;
-      if (best === undefined || (number.textContent ?? "").trim().length > (best.textContent ?? "").trim().length) widest = [number];
-    }
-    const [number] = widest;
-    if (number === undefined) return estimate;
-    const range = window.document.createRange();
-    range.selectNodeContents(number);
-    const box = range.getBoundingClientRect();
-    return box.width === 0 ? estimate : box.left - dock.getBoundingClientRect().left;
+  // where the line numbers start, the same however the view's scrolled:
+  // where the last line's does
+  const numbersLeft = (): number => numberLeft(numberColumn(), model.getLineCount());
+  let toldNumbers: Array<number> = [];
+  const tellNumbers = () => {
+    const left = Math.round(numbersLeft() * 2) / 2;
+    if (toldNumbers.includes(left)) return;
+    toldNumbers = [left];
+    hooks.numbers(left);
   };
+  editor.onDidChangeModelContent(() => whenDrawn(tellNumbers));
   const placeDocked = () => {
     const info = editor.getLayoutInfo();
-    const left = digitsLeft();
+    const left = numbersLeft();
     const purple = "var(--vscode-charts-purple, #b180d7)";
     const band = "color-mix(in srgb, var(--vscode-editor-foreground) 6%, transparent)";
     taskBox.style.paddingLeft = `${info.contentLeft}px`;
@@ -1281,6 +1638,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const [place] = tasking;
     if (place?.placement.kind === "inline") placeHeader(taskBox);
     if (place?.placement.kind === "docked") placeDocked();
+    whenDrawn(tellNumbers);
   });
   // One form for a request about a selection and about the whole document.
   // A quick task is this one request, started at once; drafting adds it to
@@ -1572,8 +1930,14 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     proposals: showProposals,
     focus: focusOn,
     requestForDocument: (route) => openTask(route, "document"),
+    revealProposals: () => {
+      const [line] = proposalAt;
+      if (line !== undefined) editor.revealLineInCenter(Math.min(line + 1, model.getLineCount()));
+    },
     dispose: () => {
       observer.disconnect();
+      folds.dispose();
+      structureChanged.dispose();
       hover.dispose();
       editor.dispose();
       model.dispose();

@@ -194,6 +194,112 @@ export function differences(before: string, after: string): Array<_Difference_Te
   return replacements;
 }
 
+// How a text changes, word by word, for a proposal to show it: in the old
+// text, what goes and what's replaced; in the new, what's added and what
+// replaces it; in both, what keeps its words but not its marks. Spaces at a
+// change's ends are left out of it, and a change of spaces alone isn't
+// shown: what happens to them goes without saying. Offsets count code
+// points.
+export interface _Change_Text_ {
+  kind: "removed" | "replaced" | "inserted" | "restyled";
+  from: number;
+  to: number;
+}
+
+export interface _Comparison_Text_ {
+  before: Array<_Change_Text_>;
+  after: Array<_Change_Text_>;
+}
+
+// a word, with any apostrophe inside it, a run of spaces, or one other
+// character
+const tokenPattern = /[\p{L}\p{N}_]+(?:['’][\p{L}\p{N}_]+)*|\s+|./gsu;
+
+// what marks a character carries, the same for the same marks
+const marksAt = (text: _Text_Doctor_): Array<string> => {
+  const keys: Array<Array<string>> = Array.from(text.text, () => []);
+  for (const mark of text.overlay) {
+    const key = mark.kind === "link" ? `link ${JSON.stringify(mark.target)}` : mark.contrast;
+    for (let at: number = mark.from; at < mark.to; at += 1) keys[at]?.push(key);
+  }
+  return keys.map((each) => each.toSorted().join(" "));
+};
+
+// Words are diffed as characters standing for them, each distinct word its
+// own private-use character, so Myers' algorithm finds which words change.
+export function compareTexts(before: _Text_Doctor_, after: _Text_Doctor_): _Comparison_Text_ {
+  const symbols = new Map<string, string>();
+  const tokens = (characters: string) => characters.match(tokenPattern) ?? [];
+  const symbolOf = (token: string) => {
+    const known = symbols.get(token);
+    if (known !== undefined) return known;
+    const made = String.fromCodePoint(0xf0000 + symbols.size);
+    symbols.set(token, made);
+    return made;
+  };
+  const oldTokens = tokens(before.text);
+  const newTokens = tokens(after.text);
+  // where each token starts, in code points, and where the last ends
+  const starts = (list: Array<string>) => list.reduce((at, token) => [...at, (at.at(-1) ?? 0) + lengthOf(token)], [0]);
+  const oldAt = starts(oldTokens);
+  const newAt = starts(newTokens);
+  const changes: _Comparison_Text_ = { before: [], after: [] };
+  const kept: Array<[number, number, number]> = [];
+  let inOld = 0;
+  let inNew = 0;
+  for (const change of differences(oldTokens.map(symbolOf).join(""), newTokens.map(symbolOf).join(""))) {
+    const added = lengthOf(change.inserted);
+    kept.push([inOld, change.start, inNew]);
+    const newStart = inNew + change.start - inOld;
+    const from = oldAt[change.start] ?? 0;
+    const to = oldAt[change.end] ?? from;
+    const newFrom = newAt[newStart] ?? 0;
+    const newTo = newAt[newStart + added] ?? newFrom;
+    if (to > from && newTo > newFrom) {
+      changes.before.push({ kind: "replaced", from, to });
+      changes.after.push({ kind: "replaced", from: newFrom, to: newTo });
+    } else if (to > from) changes.before.push({ kind: "removed", from, to });
+    else if (newTo > newFrom) changes.after.push({ kind: "inserted", from: newFrom, to: newTo });
+    inOld = change.end;
+    inNew = newStart + added;
+  }
+  kept.push([inOld, oldTokens.length, inNew]);
+  // the words kept, character by character, where their marks differ
+  const oldMarks = marksAt(before);
+  const newMarks = marksAt(after);
+  const restyled = (side: Array<_Change_Text_>, at: number) => {
+    const last = side.at(-1);
+    if (last !== undefined && last.kind === "restyled" && last.to === at) last.to = at + 1;
+    else side.push({ kind: "restyled", from: at, to: at + 1 });
+  };
+  for (const [fromToken, toToken, newToken] of kept) {
+    const from = oldAt[fromToken] ?? 0;
+    const to = oldAt[toToken] ?? from;
+    const newFrom = newAt[newToken] ?? 0;
+    for (let at = from; at < to; at += 1) {
+      if (oldMarks[at] === newMarks[newFrom + at - from]) continue;
+      restyled(changes.before, at);
+      restyled(changes.after, newFrom + at - from);
+    }
+  }
+  const byStart = (first: _Change_Text_, second: _Change_Text_) => first.from - second.from;
+  const trimmed = (characters: string) => {
+    const each = Array.from(characters);
+    const space = (at: number) => /^\s$/u.test(each[at] ?? "");
+    return (change: _Change_Text_): Array<_Change_Text_> => {
+      let from = change.from;
+      let to = change.to;
+      while (from < to && space(from)) from += 1;
+      while (to > from && space(to - 1)) to -= 1;
+      return to > from ? [{ kind: change.kind, from, to }] : [];
+    };
+  };
+  return {
+    before: changes.before.flatMap(trimmed(before.text)).toSorted(byStart),
+    after: changes.after.flatMap(trimmed(after.text)).toSorted(byStart),
+  };
+}
+
 // the text with new characters, its overlay carried across each replacement,
 // the last first so the earlier ones' offsets still hold
 export function rewrite(

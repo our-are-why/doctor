@@ -26,14 +26,98 @@
   box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
 }
 
-/* the bar at rest: what's being drafted, if anything, taking the room on the
-   left, so the actions sit on the right */
-.barStatus {
+/* the bar's left: the document's status, its parts plain words apart by
+   dots, taking the room so the actions sit on the right; a part that goes
+   somewhere is a button that reads as words */
+.status {
+  align-items: center;
   color: var(--vscode-descriptionForeground);
+  display: flex;
   flex: 1;
+  gap: 0.4rem;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status > * + *::before {
+  content: "·";
+  margin-right: 0.4rem;
+}
+
+.statusItem,
+.statusProblem {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+}
+
+.statusItem:hover,
+.statusProblem:hover {
+  text-decoration-color: currentColor;
+}
+
+.statusProblem {
+  color: var(--vscode-errorForeground);
+}
+
+/* the agent at work: three dots in turn, still when motion's unwanted */
+.pulse {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 3px;
+}
+
+.pulse > span {
+  animation: pulse 1.2s ease-in-out infinite;
+  background: currentColor;
+  border-radius: 50%;
+  height: 3px;
+  opacity: 0.25;
+  width: 3px;
+}
+
+.pulse > span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.pulse > span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+
+  40% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse > span {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* the problems, listed under the bar while asked for */
+.problems {
+  color: var(--vscode-errorForeground);
+  flex: none;
+  font-family: var(--vscode-font-family);
+  font-size: 0.85em;
+  margin: 0 0 8px;
+  padding: 0 8px 0 2rem;
 }
 
 .barButton,
@@ -65,26 +149,6 @@
 .host {
   flex: 1;
   min-height: 0;
-}
-
-.footer {
-  align-items: center;
-  border-top: 1px solid var(--vscode-widget-border, transparent);
-  color: var(--vscode-descriptionForeground);
-  display: flex;
-  flex-wrap: wrap;
-  font-family: var(--vscode-font-family);
-  font-size: 0.85em;
-  gap: 0 1rem;
-  padding: 0.3rem 1rem;
-}
-
-.footer p {
-  margin: 0;
-}
-
-.problem {
-  color: var(--vscode-errorForeground);
 }
 
 /* decorations: each rule is scoped to the editor, so it outranks the
@@ -151,13 +215,15 @@
   );
 }
 
-/* a code block, fences and all, on a neutral band a little above the
-   background: a translucent tint of the foreground, so the selection, drawn
-   in the same layer, shows through */
+/* a code block, fences and all, and a quote, reference and all, on a
+   neutral band a little above the background: a translucent tint of the
+   foreground, so the selection, drawn in the same layer, shows through, and
+   code in a quote stands a little above it */
 
 :global(.monaco-editor) .code,
 :global(.monaco-editor) .codeStart,
-:global(.monaco-editor) .codeEnd {
+:global(.monaco-editor) .codeEnd,
+:global(.monaco-editor) .quoted {
   background: color-mix(in srgb, var(--vscode-editor-foreground) 6%, transparent);
 }
 
@@ -243,7 +309,8 @@
   padding: 8px 12px;
 }
 
-.taskInput {
+.taskInput,
+.changesInput {
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
   border-radius: 2px;
@@ -263,6 +330,10 @@
 
 .taskInput:focus {
   border-color: var(--vscode-charts-purple, #b180d7);
+}
+
+.changesInput:focus {
+  border-color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-focusBorder));
 }
 
 /* while the form's open, what it's about, in the form's colour */
@@ -295,15 +366,48 @@
   padding: 0.2rem 0.75rem;
 }
 
-/* proposals: what they'd take away struck through, what they'd add beneath,
-   in the diff editor's colours */
+/* proposals: what they'd take away in red, what they'd add beneath in
+   green, in the diff editor's colours; never struck through or underlined,
+   which a document's own marks are */
 
 :global(.monaco-editor) .removedLine {
   background: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
 }
 
-:global(.monaco-editor) .removed {
-  text-decoration: line-through;
+/* a text a proposal changes in place: its line yellow, and its words, and
+   its new version's, boxed for what happens to them: red where they go,
+   green where they're new, blue where they're replaced, on both lines so
+   the two pair up, and purple where they keep their words but not their
+   marks. A box is an inner ring, taking no room, and no style a document
+   uses, so a word's own marks show as they are. */
+
+:global(.monaco-editor) .changedLine {
+  background: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 12%, transparent);
+}
+
+:global(.monaco-editor) .removedWords,
+:global(.monaco-editor) .replacedWords,
+:global(.monaco-editor) .insertedWords,
+:global(.monaco-editor) .restyledWords {
+  border-radius: 3px;
+  box-decoration-break: clone;
+  box-shadow: inset 0 0 0 1px var(--edge);
+}
+
+:global(.monaco-editor) .removedWords {
+  --edge: var(--vscode-charts-red, #f14c4c);
+}
+
+:global(.monaco-editor) .replacedWords {
+  --edge: var(--vscode-charts-blue, #3794ff);
+}
+
+:global(.monaco-editor) .insertedWords {
+  --edge: var(--vscode-charts-green, #89d185);
+}
+
+:global(.monaco-editor) .restyledWords {
+  --edge: var(--vscode-charts-purple, #b180d7);
 }
 
 /* what a proposal moves elsewhere: dimmed where it is now */
@@ -315,40 +419,142 @@
   opacity: 0.45;
 }
 
+/* what a proposal changes in the document, marked in the margin on a band
+   from where its line's number starts: --digits, set by a class for each
+   count, says how many digits that number has */
+:global(.monaco-editor) .removedGutter,
+:global(.monaco-editor) .changedGutter,
+:global(.monaco-editor) .movedGutter {
+  --left: calc(var(--numbers-right, 0px) - var(--digits, 1) * var(--digit, 0px));
+  background: linear-gradient(to right, transparent var(--left), var(--band) var(--left));
+}
+
+:global(.monaco-editor) .removedGutter {
+  --band: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
+}
+
+:global(.monaco-editor) .changedGutter {
+  --band: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 30%, transparent);
+}
+
+:global(.monaco-editor) .movedGutter {
+  --band: color-mix(in srgb, var(--vscode-editor-foreground) 8%, transparent);
+}
+
+.digits1 {
+  --digits: 1;
+}
+
+.digits2 {
+  --digits: 2;
+}
+
+.digits3 {
+  --digits: 3;
+}
+
+.digits4 {
+  --digits: 4;
+}
+
+.digits5 {
+  --digits: 5;
+}
+
+/* a struck line's number, in the colour of what goes, over the current
+   line's */
+:global(.monaco-editor) :global(.margin-view-overlays) .removedNumber.removedNumber {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground));
+}
+
+/* what a proposal adds, its words where the document's are; its band and
+   bar start in the margin, where the number of the line it's under does, at
+   --left, as the request form's do */
 .proposalAdded {
   background: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground));
-  border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground, currentColor);
   box-sizing: border-box;
   color: var(--vscode-editor-foreground);
   font-family: var(--vscode-editor-font-family, monospace), monospace;
   font-size: var(--vscode-editor-font-size);
-  padding-left: 6px;
 }
 
+.proposalMargin,
+.proposalActionsMargin,
+.proposalActionsBand {
+  --added: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground));
+  --bar: var(--vscode-gitDecoration-addedResourceForeground, currentColor);
+  /* how much darker a proposal's actions are than what it adds */
+  --shade: color-mix(in srgb, black 25%, transparent);
+}
+
+.proposalMargin {
+  background: linear-gradient(
+    to right,
+    transparent var(--left, 0px),
+    var(--bar) var(--left, 0px) calc(var(--left, 0px) + 3px),
+    var(--added) calc(var(--left, 0px) + 3px)
+  );
+}
+
+.proposalActionsMargin {
+  background:
+    linear-gradient(
+      to right,
+      transparent var(--left, 0px),
+      var(--bar) var(--left, 0px) calc(var(--left, 0px) + 3px),
+      transparent calc(var(--left, 0px) + 3px)
+    ),
+    linear-gradient(to right, transparent calc(var(--left, 0px) + 3px), var(--shade) calc(var(--left, 0px) + 3px)),
+    linear-gradient(to right, transparent calc(var(--left, 0px) + 3px), var(--added) calc(var(--left, 0px) + 3px));
+}
+
+/* a quote's bar beside what's added, as the editor draws it */
+.proposalQuote {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 35%, transparent);
+  position: absolute;
+  width: 2px;
+}
+
+/* a line wraps at the editor's width, as the document's lines do */
 .proposalLine {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: pre;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
-.proposalHeader {
-  align-items: center;
-  background: var(--vscode-editor-background);
-  border-top: 1px solid color-mix(in srgb, var(--vscode-editor-foreground) 15%, transparent);
+/* a proposal's actions, closing what it changes: on what it adds' band, a
+   shade darker, drawn by the zone beneath them out to the editor's edge, its
+   bar running on beside them unshaded; its buttons on the right, short of
+   the scrollbar, and the form for changes, when asked for, under them, its
+   field where the document's words are */
+.proposalActionsBand {
+  background: linear-gradient(var(--shade), var(--shade)), var(--added);
+}
+
+.proposalActions {
   box-sizing: border-box;
   color: var(--vscode-descriptionForeground);
   display: flex;
+  flex-direction: column;
   font-family: var(--vscode-font-family);
-  font-size: 0.9em;
-  gap: 0.4rem;
-  padding: 0 6px;
+  overflow: hidden;
+  padding: 0 6px 0 0;
 }
 
-.proposalTitle {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.proposalRow {
+  align-items: center;
+  display: flex;
+  flex: none;
+  font-size: 0.9em;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.changesForm {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 10px;
 }
 
 .proposalAccept,
@@ -368,18 +574,4 @@
 .proposalButton {
   background: var(--vscode-button-secondaryBackground);
   color: var(--vscode-button-secondaryForeground);
-}
-
-.proposalInput {
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, transparent);
-  color: var(--vscode-input-foreground);
-  font: inherit;
-  outline: none;
-  padding: 0.15rem 0.4rem;
-  width: 14em;
-}
-
-.proposalInput:focus {
-  border-color: var(--vscode-focusBorder);
 }
