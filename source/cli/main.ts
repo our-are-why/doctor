@@ -3,22 +3,32 @@ import { readFile } from "node:fs/promises";
 const usage = `doctor: the agent's side of doctor's tasks
 
 Working on doctor's tasks is a loop: run doctor wait, take the step its "next"
-gives you, and run doctor wait again. On a task, propose every change it needs,
-one proposal per independent change, then submit it: it completes once each
-proposal is accepted or rejected, and comes back to you if any is sent back for
-changes.
+gives you, and run doctor wait again. A task is its requests: what's asked of
+you, each with the places it targets. A request's targets say where it's
+aimed, not what you may change: a move, a restructure or a change it leads to
+elsewhere, in any document, is part of answering it. A request without
+targets is about every document in the project, unless its words narrow it
+("in spike"). Answer the requests with proposals, one per independent change,
+then submit the task: it completes once each proposal is accepted or rejected,
+and comes back to you if any is sent back for changes.
 
   doctor wait [--for <s>]  wait for your turn: a task to work on, or proposals sent
                            back for changes. Answers as doctor task does, with "turn" and
                            "next", the step to take. With --for, it gives up after that
                            many seconds, answering { "turn": "human", ... }
-  doctor task              the active task: its instruction, and for each document in
-                           its scope the scoped nodes and the document's base version
+  doctor task              the active task: its "requests", each with its "text" and
+                           "targets", each target shown as it is now: a "document"
+                           with all its "blocks", a "node", or a "passage" of a text
+                           with its "words"; and "documents", each document targeted
+                           with its base version
+  doctor documents         every document in the project, with its id and title
   doctor document [<id>]   a whole document as JSON, with its base version; without an
-                           id, the active task's first document
+                           id, the active task's first targeted document
   doctor propose <file>    propose changes; the file, or - for standard input, holds
-                             { "document": <id>, "base": <version>, "operations": [...] }
-                           where base is the version you read the document at
+                             { "document": <id>, "base": <version>,
+                               "answers": [<request id>, ...], "operations": [...] }
+                           where base is the version you read the document at, and
+                           answers names the requests the proposal answers
   doctor submit            hand the active task over for review, once you've proposed
                            everything it needs; with nothing left to review, it
                            completes
@@ -153,6 +163,8 @@ async function run(args: Array<string>): Promise<number> {
     }
     case "task":
       return call("GET", "task", undefined);
+    case "documents":
+      return call("GET", "documents", undefined);
     case "document":
       return call("GET", `document/${argument ?? ""}`, undefined);
     case "propose": {

@@ -1,7 +1,20 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { _Document_Doctor_, _Id_Node_, _Id_Proposal_, _Id_Task_, _Operation_Change_ } from "../shared/domain.next.ts";
+import type {
+  _Document_Doctor_,
+  _Id_Node_,
+  _Id_Proposal_,
+  _Id_Task_,
+  _Operation_Change_,
+  _Target_Request_,
+} from "../shared/domain.next.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
-import type { _Open_Proposal_, _Token_Endpoint_, _Url_Endpoint_, _Verdict_Review_ } from "../shared/protocol.ts";
+import type {
+  _Open_Proposal_,
+  _Token_Endpoint_,
+  _Url_Endpoint_,
+  _Verdict_Review_,
+  _View_Drafting_,
+} from "../shared/protocol.ts";
 import {
   confirmed,
   opened,
@@ -46,8 +59,15 @@ export interface _Session_Webview_ {
   // the proposals waiting for review on this file, and what's wrong with any
   open: Array<_Open_Proposal_>;
   openProblems: Array<string>;
-  makeTask: (scope: Array<_Id_Node_>, instruction: string) => void;
+  makeTask: (targets: Array<_Target_Request_>, text: string) => void;
   review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
+  // what's being drafted, if anything, with the draft's requests for this
+  // document
+  drafting: Array<_View_Drafting_>;
+  beginDrafting: () => void;
+  addRequest: (targets: Array<_Target_Request_>, text: string) => void;
+  start: (task: _Id_Task_) => void;
+  stopDrafting: () => void;
 }
 
 type _Due_Editor_ = "waiting" | "due";
@@ -69,6 +89,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const [due, setDue] = useState<_Due_Editor_>("waiting");
   const [arrivals, setArrivals] = useState(0);
   const [open, setOpen] = useState<Array<_Open_Proposal_>>([]);
+  const [drafting, setDrafting] = useState<Array<_View_Drafting_>>([]);
   const [openProblems, setOpenProblems] = useState<Array<string>>([]);
   const timer = useRef(0);
 
@@ -95,6 +116,10 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     if (message.kind === "proposals") {
       setOpen(message.open);
       setOpenProblems(message.problems);
+      return;
+    }
+    if (message.kind === "focus") {
+      setDrafting(message.drafting);
       return;
     }
     const current = loadRef.current;
@@ -154,9 +179,30 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     setDue("due");
   };
 
-  const makeTask = (scope: Array<_Id_Node_>, instruction: string) => send({ kind: "task", file, scope, instruction });
+  const makeTask = (targets: Array<_Target_Request_>, text: string) => send({ kind: "task", text, targets });
   const review = (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) =>
     send({ kind: "review", task, proposal, verdict });
 
-  return { load, problems, connection, arrivals, perform, leave, open, openProblems, makeTask, review };
+  const beginDrafting = () => send({ kind: "drafting" });
+  const addRequest = (targets: Array<_Target_Request_>, text: string) => send({ kind: "request", text, targets });
+  const start = (task: _Id_Task_) => send({ kind: "activate", task });
+  const stopDrafting = () => send({ kind: "unfocus" });
+
+  return {
+    load,
+    problems,
+    connection,
+    arrivals,
+    perform,
+    leave,
+    open,
+    openProblems,
+    makeTask,
+    review,
+    drafting,
+    beginDrafting,
+    addRequest,
+    start,
+    stopDrafting,
+  };
 }

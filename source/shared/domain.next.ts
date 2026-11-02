@@ -9,6 +9,7 @@ export type _DRAFT_Id__Node_ = _Role_<string, "DraftNodeId">;
 export type _Id_Note_ = _Role_<string, "NoteId">;
 export type _Id_Task_ = _Role_<string, "TaskId">;
 export type _Id_Proposal_ = _Role_<string, "ProposalId">;
+export type _Id_Request_ = _Role_<string, "RequestId">;
 export type _Id_Change_ = _Role_<string, "ChangeId">;
 export type _Version_Document_ = _Role_<string, "DocumentVersion">;
 export type _Hash_Node_ = _Role_<string, "NodeHash">;
@@ -479,8 +480,38 @@ export interface _Brief_Task_ {
 export interface _Version_Brief_ {
   number: _Number_Brief_;
   written: _Stamp_Doctor_;
-  instruction: _Text_Doctor_;
-  scope: Array<_Ref_Node_>;
+  requests: _NonEmpty_<_Request_Task_>;
+}
+
+// Something asked of the agent: its text, and where it applies. With
+// targets, it applies strictly there; without, to every document in the
+// project, which its words can narrow loosely. A task is named by its first.
+export interface _Request_Task_ {
+  id: _Id_Request_;
+  made: _Stamp_Doctor_;
+  text: _Text_Doctor_;
+  targets: Array<_Target_Request_>;
+}
+
+// Where a request applies: a whole document, as it is when the agent works
+// on it, so what's added later is covered too; a node, with everything under
+// it; or a passage, a range of the characters of one text.
+export type _Target_Request_ = _DOCUMENT_Target__Request_ | _NODE_Target__Request_ | _PASSAGE_Target__Request_;
+
+interface __BASE_Target__Request_<__TargetKind__ extends string> {
+  kind: __TargetKind__;
+  document: _Id_Document_;
+}
+
+export interface _DOCUMENT_Target__Request_ extends __BASE_Target__Request_<"document"> {}
+
+export interface _NODE_Target__Request_ extends __BASE_Target__Request_<"node"> {
+  node: _Id_Node_;
+}
+
+export interface _PASSAGE_Target__Request_ extends __BASE_Target__Request_<"passage"> {
+  holder: _Holder_Text_;
+  range: _Range_Text_;
 }
 
 export type _Number_Brief_ = _Proof_<number, "BriefNumber">;
@@ -568,6 +599,8 @@ export interface _Version_Proposal_ {
   written: _Stamp_Doctor_;
   base: _Version_Document_;
   answering: _Number_Brief_;
+  // the requests it answers, of the brief version it answers
+  answers: Array<_Id_Request_>;
   operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
 }
 

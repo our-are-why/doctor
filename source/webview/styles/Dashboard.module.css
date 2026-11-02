@@ -46,3 +46,68 @@
   font-size: 0.85em;
   margin: 0.2rem 0 0;
 }
+
+.primary {
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: 2px;
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.15rem 0.6rem;
+}
+
+/* a new task, about whole documents */
+
+.form {
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+  padding: 0.6rem;
+}
+
+.input {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  box-sizing: border-box;
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  outline: none;
+  padding: 4px 6px;
+  resize: vertical;
+  width: 100%;
+}
+
+.input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+/* a draft's requests, each to take out */
+
+.requests {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0 0 0 5.5em;
+}
+
+.request {
+  align-items: baseline;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.1rem 0;
+}
+
+.forget {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 0.3rem;
+}
+
+.forget:hover {
+  color: var(--vscode-foreground);
+}

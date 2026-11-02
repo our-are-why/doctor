@@ -62,11 +62,15 @@ parking one and making another active switches branches.
 
 ## requests
 
-a task is its **requests**: what you ask the agent for. every request
+a task is its **requests**: the changes you want. every request
 belongs to a task. a request is its text and, optionally, its **targets**:
 where it applies.
 
-- **with targets, a request applies strictly there.** a target is one of:
+- **targets say where a request is aimed, not what may change.** answering
+  it can move what's targeted, restructure around it, or change other
+  blocks or documents it leads to: doctor describes change, it doesn't
+  fence it in, and every change is reviewed before it applies. a target is
+  one of:
   - **a whole document:** whatever it holds when the agent works, so text
     added later is covered too;
   - **a node:** a block, a list item, or a section with everything under it;
@@ -76,12 +80,11 @@ where it applies.
     back.
 - **one request can have several targets,** so "use the same term" in five
   places is one request.
-- **without targets, a request applies to every document in the project.**
+- **without targets, a request is about every document in the project.**
   its own words can narrow that loosely ("cleanup grammar in spike"), and
   the agent reads them that way.
-- **where a task may act** follows from its requests: anywhere, if any
-  request has no targets, and otherwise all its requests' targets together.
-  there's no scope to set.
+- **there's no scope to set.** what a task is about follows from its
+  requests.
 - **a task is named** by its first request.
 - **targets in documents are anchored the way notes are,** to a document, a
   node or a passage, never to line numbers, each at the version it was made
@@ -195,7 +198,7 @@ each way of making a request has one meaning:
   and Alt+drag add selections), write in the form beside it, press Enter.
   that makes a task in one go, with one request targeting what you selected.
   it always has targets, so it only opens with a selection.
-- **the request bar** sits at the top of the editor: "Ask for something in
+- **the request bar** sits at the top of the editor: "Request a change to
   this document…". typing in it and pressing Enter makes a task with one
   request targeting this document, with nothing to select. right-click
   "doctor: request for this document", and "doctor: new task" with nothing
@@ -233,8 +236,31 @@ answer.
 
 - one active task at a time; the states are draft, working, reviewing,
   parked, completed and canceled.
-- a brief has versions, but only one is ever written. it holds an
-  instruction and a scope of nodes.
+- a brief has versions, but only one is ever written, and a task is made
+  with one request. requests have targets: whole documents, nodes and
+  passages, in any documents, or none. briefs written before read as one
+  request aimed at their scope.
+- a proposal can change anything, in any document, and names the requests
+  it answers. `doctor documents` lists the project's documents for the
+  agent. proposals are one document each, so a move into another document
+  is two, reviewed separately.
+- requests are made from the selection's form (a passage, or the blocks a
+  selection touches), the request bar above a document (the document), the
+  dashboard's New task (no targets) and the Explorer (the files picked).
+  requests on proposals are still "request changes", kept in the proposal's
+  rounds.
+- there are two ways to make a task, each its own entry point. a **quick
+  task** is one request, started at once: right-click "doctor: quick task"
+  on a selection, or the bar's Start task, or the dashboard's Quick task…. **draft a task** is a mode: right-click "doctor: draft a task",
+  or Draft a task in the bar or on the dashboard. while drafting, requests
+  go into the draft, which is made with the first one, so a task is never
+  without a request. the form and the bar say "Add to draft", the
+  right-click items become "add to the draft" and "stop drafting", the
+  draft's requests are marked in every document's margin, and the bar shows
+  it with Start task. stopping leaves the draft on the dashboard, which
+  lists its requests to take out, and can continue drafting it, start it
+  or discard it. a task can be drafted while another is active, and edits
+  made while drafting go to the document, as there's no task mode yet.
 - proposals have rounds. accept applies a proposal to the document
   straight away, as a change whose source is the proposal.
 - the agent proposes everything, then submits. a submitted task completes
@@ -252,9 +278,9 @@ answer.
 - everything edited in task mode belongs to the task.
 - in task mode, the editor marks what the task changed as not yet applied.
 - a task is its requests. a request is text with optional targets: whole
-  documents, nodes, passages or proposals. with targets it applies strictly
-  there, and without, to every document in the project, which its words can
-  narrow loosely. there's no scope to set.
+  documents, nodes, passages or proposals. targets say where it's aimed,
+  not what may change; without them it's about every document in the
+  project, which its words can narrow loosely. there's no scope to set.
 - the brief is steerable, as versions, and the agent works while you review.
 - proposals are focused, say which requests they answer, and take requests
   on their words. you edit a proposal by accepting and then editing it.

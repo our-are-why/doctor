@@ -2,65 +2,106 @@ import type {
   _ACTIVE_Task__Doctor_,
   _Author_Doctor_,
   _Id_Document_,
-  _Id_Node_,
-  _Node_Document_,
   _Proposal_Task_,
   _Reason_Task_,
+  _Target_Request_,
   _Task_Doctor_,
   _WORKING_Task__Doctor_,
 } from "../shared/domain.next.ts";
+import { latestBrief, nameOf } from "../shared/brief.ts";
 import { parse } from "../shared/parse.ts";
 import { proposalPayloadSchema } from "../shared/protocol.ts";
 import { documentIdSchema } from "../shared/schema.ts";
-import { indexNodes } from "../shared/tree.ts";
+import { sliceOf } from "../shared/text.ts";
+import { indexNodes, textOfNode, type _Index_Document_ } from "../shared/tree.ts";
 import type { _Answer_Endpoint_, _Request_Endpoint_ } from "./endpoint.ts";
-import { activeTask, agentsTurn, listTasks, propose, show, submit, type _Place_Tasks_ } from "./tasks.ts";
+import {
+  activeTask,
+  agentsTurn,
+  listTasks,
+  propose,
+  show,
+  submit,
+  type _Place_Tasks_,
+  type _Shown_Document_,
+} from "./tasks.ts";
 
 const answer = (status: number, body: unknown): _Answer_Endpoint_ => ({ status, body });
 const issues = (status: number, list: Array<string>) => answer(status, { issues: list });
 
 const reasonOf = (reason: _Reason_Task_) => (reason.kind === "stated" ? { reason: reason.text.text } : {});
 
-// what the agent needs of a proposal: where it stands, what was asked of it
-// if it's being revised, and why if it was turned down
+// what the agent needs of a proposal: where it stands, the requests it
+// answers, what was asked of it if it's being revised, and why if it was
+// turned down
 function proposalSummary(proposal: _Proposal_Task_) {
   const last = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
   return {
     proposal: proposal.id,
     document: proposal.document,
     state: proposal.state,
+    answers: last.version.answers,
     ...(last.kind === "requested" ? { feedback: last.request.feedback.text } : {}),
     ...(proposal.state === "rejected" || proposal.state === "withdrawn" ? reasonOf(proposal.reason) : {}),
   };
 }
 
-function scopeOf(task: _Task_Doctor_): Map<_Id_Document_, Array<_Id_Node_>> {
-  const latest = task.brief.versions[task.brief.versions.length - 1] ?? task.brief.versions[0];
-  const documents = new Map<_Id_Document_, Array<_Id_Node_>>();
-  for (const ref of latest.scope) documents.set(ref.document, [...(documents.get(ref.document) ?? []), ref.node]);
-  return documents;
+interface _Seen_Document_ {
+  shown: _Shown_Document_;
+  index: _Index_Document_;
 }
 
-// the active task as the agent sees it: its documents as they are now, each
-// with its version to propose against
+// A target as it is now: a whole document's blocks, a node, or a passage's
+// words, or what's wrong if it can't be found.
+function targetView(target: _Target_Request_, seen: Map<_Id_Document_, Array<_Seen_Document_>>) {
+  const [document] = seen.get(target.document) ?? [];
+  if (document === undefined) return { ...target, issues: [`there's no document ${target.document} to show`] };
+  const { content } = document.shown.document;
+  switch (target.kind) {
+    case "document":
+      return { kind: target.kind, document: target.document, blocks: content.children };
+    case "node": {
+      const entry = document.index.get(target.node);
+      return entry === undefined
+        ? { ...target, issues: [`node ${target.node} isn't in the document any more`] }
+        : { kind: target.kind, document: target.document, node: entry.node };
+    }
+    case "passage": {
+      const { holder } = target;
+      const entry = holder.kind === "node" ? document.index.get(holder.node) : undefined;
+      const [held] = holder.kind === "title" ? [content.title] : entry === undefined ? [] : textOfNode(entry.node);
+      return held === undefined
+        ? { ...target, issues: [`the text this passage was in isn't in the document any more`] }
+        : { ...target, words: sliceOf(held.text, target.range.from, target.range.to) };
+    }
+  }
+}
+
+// The active task as the agent sees it: its requests, each target shown as
+// it is now, and each document they target with the version to propose
+// against. A request without targets reaches every document, which
+// `doctor documents` lists.
 async function taskView(place: _Place_Tasks_, task: _ACTIVE_Task__Doctor_) {
-  const latest = task.brief.versions[task.brief.versions.length - 1] ?? task.brief.versions[0];
+  const latest = latestBrief(task);
+  const targeted = [...new Set(latest.requests.flatMap((request) => request.targets.map((target) => target.document)))];
+  const seen = new Map<_Id_Document_, Array<_Seen_Document_>>();
   const documents = await Promise.all(
-    [...scopeOf(task)].map(async ([id, nodes]) => {
+    targeted.map(async (id) => {
       const shown = await show(place, id);
       if (shown.kind === "refused") return { document: id, issues: shown.issues };
-      const index = indexNodes(shown.value.document.content);
-      const scope = nodes.flatMap((node): Array<_Node_Document_> => {
-        const entry = index.get(node);
-        return entry === undefined ? [] : [entry.node];
-      });
-      return { document: id, title: shown.value.document.content.title.text, base: shown.value.base, scope };
+      seen.set(id, [{ shown: shown.value, index: indexNodes(shown.value.document.content) }]);
+      return { document: id, title: shown.value.document.content.title.text, base: shown.value.base };
     }),
   );
   return {
     task: task.id,
     state: task.state,
-    instruction: latest.instruction.text,
+    name: nameOf(task),
+    requests: latest.requests.map((request) => ({
+      request: request.id,
+      text: request.text.text,
+      targets: request.targets.map((target) => targetView(target, seen)),
+    })),
     documents,
     proposals: task.proposals.map(proposalSummary),
   };
@@ -72,7 +113,7 @@ function nextStep(task: _WORKING_Task__Doctor_): string {
     return `revise proposal ${revising.join(", ")} as its feedback asks, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit\`, then \`doctor wait\``;
   }
   if (task.proposals.length === 0) {
-    return "propose every change the task needs with `doctor propose` (`doctor help` shows how), one proposal per independent change; then `doctor submit` to hand them over, and `doctor wait`";
+    return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers; a request without targets reaches every document, which `doctor documents` lists; then `doctor submit` to hand them over, and `doctor wait`";
   }
   return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it; then `doctor submit`, and `doctor wait`";
 }
@@ -163,13 +204,14 @@ export async function serveAgent(
     if (task === undefined) return issues(404, ["there's no active task"]);
     return answer(200, await taskView(place, task));
   }
+  if (route === "GET /documents") return answer(200, { documents: place.catalog() });
   if (route === "GET /wait") {
     const wanted = Number.parseInt(request.search.get("for") ?? "", 10);
     return answer(200, await waitForTurn(place, Number.isFinite(wanted) && wanted >= 0 ? wanted : longestWait));
   }
   if (request.method === "GET" && request.path.startsWith("/document")) {
     const named = request.path.slice("/document/".length);
-    const [fallback] = task === undefined ? [] : [...scopeOf(task).keys()];
+    const [fallback] = task === undefined ? [] : latestBrief(task).requests.flatMap((request) => request.targets.map((target) => target.document));
     const id = parse(documentIdSchema, named === "" ? fallback : named);
     if (id.kind === "rejected") return issues(400, ["name a document, or have an active task with one in its scope"]);
     const shown = await show(place, id.value);

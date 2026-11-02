@@ -1,4 +1,4 @@
-import { textOperations } from "../shared/apply.ts";
+import { applyOperations, textOperations } from "../shared/apply.ts";
 import type {
   _Block_Document_,
   _Contrast_Mark_,
@@ -11,17 +11,19 @@ import type {
   _Node_Document_,
   _Operation_Change_,
   _Parent_Position_,
+  _PASSAGE_Target__Request_,
   _Position_Operation_,
+  _Target_Request_,
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
 import { parseOwn } from "../shared/parse.ts";
 import { contentStart, project, startsBlock } from "../shared/projection.ts";
 import { realize } from "../shared/proposals.ts";
-import type { _Open_Proposal_, _Verdict_Review_ } from "../shared/protocol.ts";
-import { nodeIdSchema } from "../shared/schema.ts";
+import type { _Open_Proposal_, _Verdict_Review_, _View_Drafting_ } from "../shared/protocol.ts";
+import { changeIdSchema, nodeIdSchema, offsetSchema } from "../shared/schema.ts";
 import { readTarget, writeTarget } from "../shared/target.ts";
 import { lengthOf, relink, segmentsOf, toggleContrast, type _Segment_Text_ } from "../shared/text.ts";
-import { indexNodes, nodesWithin, textOfNode, type _Index_Document_ } from "../shared/tree.ts";
+import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
 import * as monaco from "./monaco.ts";
 import "./styles/monaco.css";
 import styles from "./styles/TextEditor.module.css";
@@ -31,7 +33,14 @@ export interface _Hooks_View_ {
   edited: (lines: Array<string>, owners: Array<Array<_Id_Node_>>) => void;
   perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>) => void;
   leave: () => void;
-  makeTask: (scope: Array<_Id_Node_>, instruction: string) => void;
+  // a quick task: one request, started at once
+  makeTask: (targets: Array<_Target_Request_>, text: string) => void;
+  // drafting: a task built up from requests, started when it's ready
+  beginDrafting: () => void;
+  addRequest: (targets: Array<_Target_Request_>, text: string) => void;
+  stopDrafting: () => void;
+  // a request for the whole document, made in the editor's bar
+  requestDocument: () => void;
   review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
 }
 
@@ -41,8 +50,12 @@ export interface _View_Text_ {
   decorate: (document: _Document_Doctor_) => void;
   mark: (issues: Array<string>) => void;
   proposals: (open: Array<_Open_Proposal_>) => void;
+  focus: (drafting: Array<_View_Drafting_>) => void;
   dispose: () => void;
 }
+
+// what the selection's form does with what's written in it
+type _Route_Form_ = "quick" | "draft";
 
 // positions in a line's content: the document counts code points, Monaco
 // counts UTF-16 units
@@ -147,7 +160,11 @@ interface _Piece_Mark_ {
   spacing: "keeps" | "changes";
 }
 
-function markPieces(content: string): Array<_Piece_Mark_> {
+// In the editor a quote's >s take no room, its bar drawn in the margin
+// beside them; where there's no margin, as in a proposal's lines, they show.
+type _Quotes_Mark_ = "collapsed" | "shown";
+
+function markPieces(content: string, quotes: _Quotes_Mark_): Array<_Piece_Mark_> {
   const pieces: Array<_Piece_Mark_> = [];
   const piece = (from: number, to: number, className: string, spacing: _Piece_Mark_["spacing"]) => {
     if (to > from) pieces.push({ from, to, className, spacing });
@@ -155,7 +172,8 @@ function markPieces(content: string): Array<_Piece_Mark_> {
   const quote = /^(>+)(?: |$)/.exec(content);
   let at = 0;
   if (quote !== null) {
-    piece(0, quote[0].length, styles.collapse, "changes");
+    if (quotes === "collapsed") piece(0, quote[0].length, styles.collapse, "changes");
+    else piece(0, quote[1]?.length ?? 0, styles.mark, "keeps");
     at = quote[0].length;
   }
   const rest = content.slice(at);
@@ -231,6 +249,8 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     insertSpaces: true,
     wrappingStrategy: "advanced",
     minimap: { enabled: false },
+    // room for a quote's bar and a request's mark side by side
+    lineDecorationsWidth: 14,
     folding: false,
     glyphMargin: false,
     scrollBeyondLastLine: false,
@@ -333,7 +353,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
         inline(line, 0, start, styles.mark);
         return;
       }
-      for (const each of markPieces(content)) {
+      for (const each of markPieces(content, "collapsed")) {
         decorations.push({
           range: new monaco.Range(line, each.from + 1, line, each.to + 1),
           options: { inlineClassName: each.className, inlineClassNameAffectsLetterSpacing: each.spacing === "changes" },
@@ -384,6 +404,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
       }
     });
     styling.set(decorations);
+    markRequests();
   };
 
   // where the caret sits, as a character of a text, so it can be put back
@@ -476,6 +497,32 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     const block: _Block_Document_ = node.kind === "listItem" ? { kind: "list", id: previewId(), order: "unordered", children: [node] } : node;
     return project({ ...shown, content: { title: { text: "", overlay: [] }, children: [block] }, notes: [] }).lines.slice(2);
   };
+  const previewChange = parseOwn(changeIdSchema, "preview000");
+
+  // A node's lines in the document as the proposal would leave it, so they
+  // read as they will: a heading at its real level, under its quote's marks,
+  // at its list's depth, with what's moved into it. From the node's first
+  // line to the last before a line of something outside it.
+  const linesAfter = (shown: _Document_Doctor_, operations: Array<_Operation_Change_>) => {
+    const applied = applyOperations(shown, operations, { document: shown.id, id: previewChange });
+    if (applied.kind === "refused") return (_node: _Id_Node_): Array<Array<string>> => [];
+    const projection = project(applied.document);
+    const index = indexNodes(applied.document.content);
+    return (node: _Id_Node_): Array<Array<string>> => {
+      const entry = index.get(node);
+      if (entry === undefined) return [];
+      const inside = new Set<string>(nodesWithin(entry.node).map((each) => each.id));
+      const start = projection.owners.findIndex((owner) => owner.some((id) => inside.has(id)));
+      if (start === -1) return [];
+      let end = start;
+      for (let at = start + 1; at < projection.lines.length; at += 1) {
+        const owner = projection.owners[at] ?? [];
+        if (owner.length > 0 && !owner.some((id) => inside.has(id))) break;
+        if (!/^>*$/.test((projection.lines[at] ?? "").trim())) end = at;
+      }
+      return [projection.lines.slice(start, end + 1)];
+    };
+  };
 
   // Monaco lays view zones beneath its lines of text, where clicks never
   // reach them, so a proposal's controls sit in an overlay widget kept level
@@ -565,7 +612,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
       for (const line of lines) {
         const shownLine = element("div", styles.proposalLine, "");
         let at = 0;
-        for (const piece of markPieces(line)) {
+        for (const piece of markPieces(line, "shown")) {
           shownLine.append(line.slice(at, piece.from), element("span", piece.className, line.slice(piece.from, piece.to)));
           at = piece.to;
         }
@@ -608,6 +655,14 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     };
     const added: Array<{ after: number; node: HTMLElement; lines: number; level: Array<HTMLElement> }> = [];
     const struck: Array<monaco.editor.IModelDeltaDecoration> = [];
+    // what's moved away is dimmed where it is, not struck as if it went
+    const dim = (from: number, to: number) => {
+      for (let line = from; line <= to; line += 1) {
+        const content = model.getLineContent(line);
+        struck.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className: styles.movedLine } });
+        if (content.length > 0) struck.push({ range: new monaco.Range(line, 1, line, content.length + 1), options: { inlineClassName: styles.moved } });
+      }
+    };
     const strike = (from: number, to: number, start: number) => {
       for (let line = from; line <= to; line += 1) {
         const content = model.getLineContent(line);
@@ -626,7 +681,12 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
         touched.push(after + 1);
       };
       let last = 1;
-      for (const operation of realize(item.operations, previewId)) {
+      const operations = realize(item.operations, previewId);
+      const linesOf = linesAfter(shown, operations);
+      // what goes into something this same proposal adds is shown within it
+      const intoAdded = (at: _Position_Operation_) =>
+        (at.parent.kind === "node" && !index.has(at.parent.node)) || (at.kind === "after" && !index.has(at.sibling));
+      for (const operation of operations) {
         switch (operation.kind) {
           case "write":
           case "style": {
@@ -677,8 +737,10 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
             break;
           }
           case "insert": {
+            if (intoAdded(operation.at)) break;
             const after = placeAfter(operation.at, last);
-            add(after, subtreeLines(shown, operation.subtree));
+            const [lines = subtreeLines(shown, operation.subtree)] = linesOf(operation.subtree.id);
+            add(after, lines);
             last = after;
             break;
           }
@@ -686,10 +748,12 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
             const line = startOf(operation.node);
             const node = index.get(operation.node)?.node;
             if (line === 0 || node === undefined) break;
-            strike(line, endOf(operation.node, line), 0);
+            dim(line, endOf(operation.node, line));
             touched.push(line);
+            if (intoAdded(operation.to)) break;
             const after = placeAfter(operation.to, last);
-            add(after, subtreeLines(shown, node).map((each, at) => (at === 0 ? `${each}  (moved here)` : each)));
+            const [lines = subtreeLines(shown, node)] = linesOf(operation.node);
+            add(after, lines.map((each, at) => (at === 0 ? `${each}  (moved here)` : each)));
             last = after;
             break;
           }
@@ -752,6 +816,10 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   action("doctor.highlighted", "doctor: highlighted", [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyH], () => toggle("highlighted"));
   action("doctor.struck", "doctor: struck", [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyX], () => toggle("struck"));
 
+  // A content widget is hidden until Monaco next draws it, and a hidden field
+  // can't take the focus, so a widget's field is focused once it's drawn.
+  const whenDrawn = (act: () => void) => requestAnimationFrame(() => requestAnimationFrame(act));
+
   // linking: a small input beside the selection, or beside the link the caret
   // is in, takes a target; an empty one unlinks
   const linkBox = document.createElement("div");
@@ -806,8 +874,10 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     linkInput.value = existing === undefined ? "" : writeTarget(existing.target);
     linkBox.classList.remove(styles.linkInvalid);
     editor.addContentWidget(linkWidget);
-    linkInput.focus();
-    linkInput.select();
+    whenDrawn(() => {
+      linkInput.focus();
+      linkInput.select();
+    });
   };
   linkInput.addEventListener("keydown", (event) => {
     event.stopPropagation();
@@ -936,27 +1006,47 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
       ? selection.endLineNumber - 1
       : selection.endLineNumber;
 
-  // A task about the blocks the selection touches, each once: a code
-  // block's lines are its block's, and a block inside another in the scope
-  // goes with it.
-  const scopeOfSelection = (): Array<_Id_Node_> => {
+  // What the selections point at. One within a single line's words, short
+  // of all of them, is a passage of that text. Any other is the blocks it
+  // touches, each once: a code block's lines are its block's, and a block
+  // inside another goes with it, as does a passage in it.
+  const targetsOfSelection = (): Array<_Target_Request_> => {
     const [document] = documents;
+    if (document === undefined) return [];
     const owners = ownersNow();
     const kinds = lineKinds();
+    const passages: Array<_PASSAGE_Target__Request_> = [];
     const found = new Set<_Id_Node_>();
     for (const selection of editor.getSelections() ?? []) {
-      for (let line = selection.startLineNumber; line <= lastLineOf(selection); line += 1) {
-        let at = line;
-        while (at > 1 && kinds[at - 1] === "code" && (owners[at - 1] ?? []).length === 0) at -= 1;
-        for (const id of owners[at - 1] ?? []) found.add(id);
+      if (selection.isEmpty()) continue;
+      const line = selection.startLineNumber;
+      const [holder] = holderAt(line, owners);
+      const [text] = holder === undefined ? [] : textAt(document, holder);
+      const content = model.getLineContent(line);
+      const start = contentStart(content);
+      const body = content.slice(start);
+      const from = selection.startColumn - 1 - start;
+      const to = selection.endColumn - 1 - start;
+      const words = selection.endLineNumber === line && from >= 0 && to <= body.length && to - from < body.length;
+      if (holder !== undefined && text !== undefined && text.text === body && words) {
+        const range = { from: parseOwn(offsetSchema, pointsOf(body, from)), to: parseOwn(offsetSchema, pointsOf(body, to)) };
+        passages.push({ kind: "passage", document: document.id, holder, range });
+        continue;
+      }
+      for (let at = line; at <= lastLineOf(selection); at += 1) {
+        let owned = at;
+        while (owned > 1 && kinds[owned - 1] === "code" && (owners[owned - 1] ?? []).length === 0) owned -= 1;
+        for (const id of owners[owned - 1] ?? []) found.add(id);
       }
     }
-    const index: _Index_Document_ = document === undefined ? new Map() : indexNodes(document.content);
+    const index = indexNodes(document.content);
     const inside = (id: _Id_Node_): boolean => {
       const parent = index.get(id)?.parent;
       return parent?.kind === "node" && (found.has(parent.node) || inside(parent.node));
     };
-    return [...found].filter((id) => !inside(id));
+    const nodes = [...found].filter((id) => !inside(id)).map((node): _Target_Request_ => ({ kind: "node", document: document.id, node }));
+    const loose = passages.filter((passage) => passage.holder.kind === "title" || !(found.has(passage.holder.node) || inside(passage.holder.node)));
+    return [...nodes, ...loose];
   };
 
   // where the pointer last was over the editor, down from its top
@@ -978,15 +1068,63 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   taskHint.className = styles.taskHint;
   const makeButton = document.createElement("button");
   makeButton.className = styles.proposalAccept;
-  makeButton.textContent = "Make task";
   const cancelButton = document.createElement("button");
   cancelButton.className = styles.proposalButton;
   cancelButton.textContent = "Cancel";
   const taskRow = document.createElement("div");
   taskRow.className = styles.taskRow;
   taskRow.append(taskHint, cancelButton, makeButton);
+
+  // What's being drafted, if anything. While a task is being drafted, the
+  // form adds to it, and its requests here are marked: in the margin of the
+  // lines they're on, a passage's words underlined, the request on hover.
+  let drafting: Array<_View_Drafting_> = [];
+  const draftingKey = editor.createContextKey<boolean>("doctorDrafting", false);
+  const requestMarks = editor.createDecorationsCollection();
+  const markRequests = () => {
+    const [document] = documents;
+    const [draft] = drafting.flatMap((focus) => (focus.kind === "draft" ? [focus] : []));
+    if (document === undefined || draft === undefined) {
+      requestMarks.clear();
+      return;
+    }
+    const owners = ownersNow();
+    const index = indexNodes(document.content);
+    const marks: Array<monaco.editor.IModelDeltaDecoration> = [];
+    const markLine = (line: number, hoverMessage: monaco.IMarkdownString) =>
+      marks.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, linesDecorationsClassName: styles.requestMark, hoverMessage } });
+    for (const request of draft.here) {
+      const hoverMessage = { value: `request · ${request.text}` };
+      for (const target of request.targets) {
+        if (target.kind === "node") {
+          const entry = index.get(target.node);
+          const inside = new Set<string>(entry === undefined ? [] : nodesWithin(entry.node).map((each) => each.id));
+          owners.forEach((owner, at) => {
+            if (owner.some((id) => inside.has(id))) markLine(at + 1, hoverMessage);
+          });
+        }
+        if (target.kind === "passage") {
+          const { holder } = target;
+          const line = holder.kind === "title" ? 1 : owners.findIndex((owner) => owner.includes(holder.node)) + 1;
+          if (line === 0) continue;
+          const content = model.getLineContent(line);
+          const start = contentStart(content);
+          const body = content.slice(start);
+          const range = new monaco.Range(line, start + unitsOf(body, target.range.from) + 1, line, start + unitsOf(body, target.range.to) + 1);
+          marks.push({ range, options: { inlineClassName: styles.requestPassage, hoverMessage } });
+          markLine(line, hoverMessage);
+        }
+      }
+    }
+    requestMarks.set(marks);
+  };
+  const focusOn = (next: Array<_View_Drafting_>) => {
+    drafting = next;
+    draftingKey.set(next.length > 0);
+    markRequests();
+  };
   taskBox.append(taskInput, taskRow);
-  let tasking: Array<{ scope: Array<_Id_Node_>; at: monaco.IPosition; above: "above" | "below" }> = [];
+  let tasking: Array<{ targets: Array<_Target_Request_>; at: monaco.IPosition; above: "above" | "below"; route: _Route_Form_ }> = [];
   const { ABOVE, BELOW } = monaco.editor.ContentWidgetPositionPreference;
   const taskWidget: monaco.editor.IContentWidget = {
     getId: () => "doctor.task",
@@ -1002,10 +1140,16 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     editor.removeContentWidget(taskWidget);
     editor.focus();
   };
-  const openTask = () => {
+  // A quick task is this one request, started at once; drafting adds it to
+  // the task being drafted. With nothing selected, the request is for the
+  // document, made in its bar.
+  const openTask = (route: _Route_Form_) => {
     const selection = editor.getSelection();
-    if (selection === null) return;
-    const scope = scopeOfSelection();
+    const targets = targetsOfSelection();
+    if (selection === null || targets.length === 0) {
+      hooks.requestDocument();
+      return;
+    }
     const first = selection.startLineNumber;
     const last = lastLineOf(selection);
     const top = editor.getScrolledVisiblePosition({ lineNumber: first, column: 1 });
@@ -1013,15 +1157,21 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     const [y] = pointer;
     const nearerTop =
       y !== undefined && top !== null && bottom !== null && Math.abs(y - top.top) < Math.abs(y - (bottom.top + bottom.height));
-    tasking = [{ scope, at: { lineNumber: nearerTop ? first : last, column: 1 }, above: nearerTop ? "above" : "below" }];
-    const blocks = scope.length === 1 ? "the selected block" : `the ${scope.length} selected blocks`;
-    taskHint.textContent = `for ${scope.length === 0 ? "the whole document" : blocks} · Enter makes it, Shift+Enter a new line`;
-    taskInput.placeholder = "What should the agent do?";
+    tasking = [{ targets, at: { lineNumber: nearerTop ? first : last, column: 1 }, above: nearerTop ? "above" : "below", route }];
+    const [only] = targets;
+    const what =
+      targets.length > 1 ? `the ${targets.length} selected places` : only?.kind === "passage" ? "the selected words" : "the selected block";
+    makeButton.textContent = route === "quick" ? "Start task" : "Add to draft";
+    taskHint.textContent =
+      route === "quick"
+        ? `for ${what} · a quick task: this one request, started now`
+        : `for ${what} · adds a request to the task you're drafting`;
+    taskInput.placeholder = "What should change here?";
     taskBox.classList.remove(styles.taskInvalid);
     editor.addContentWidget(taskWidget);
-    taskInput.focus();
+    whenDrawn(() => taskInput.focus());
   };
-  const makeTask = () => {
+  const submitTask = () => {
     const [place] = tasking;
     const written = taskInput.value.trim();
     if (place === undefined) return;
@@ -1030,7 +1180,8 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
       taskInput.focus();
       return;
     }
-    hooks.makeTask(place.scope, written);
+    if (place.route === "draft") hooks.addRequest(place.targets, written);
+    else hooks.makeTask(place.targets, written);
     taskInput.value = "";
     closeTask();
   };
@@ -1039,21 +1190,38 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     if (event.key === "Escape") closeTask();
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
-    makeTask();
+    submitTask();
   });
   taskInput.addEventListener("input", () => taskBox.classList.remove(styles.taskInvalid));
-  makeButton.addEventListener("click", makeTask);
+  makeButton.addEventListener("click", submitTask);
   cancelButton.addEventListener("click", closeTask);
   // closed when the focus leaves it, not when it moves to one of its buttons
   taskBox.addEventListener("focusout", (event) => {
     if (!(event.relatedTarget instanceof Node && taskBox.contains(event.relatedTarget))) closeTask();
   });
-  editor.addAction({
-    id: "doctor.task",
-    label: "doctor: new task",
-    contextMenuGroupId: "0_doctor",
-    run: openTask,
+  // What the right-click offers depends on whether a task is being drafted,
+  // and on whether anything's selected: with a selection, requests about
+  // it; without, requests about the whole document.
+  const offer = (id: string, label: string, when: string, run: () => void) =>
+    editor.addAction({ id, label, contextMenuGroupId: "0_doctor", precondition: when, run });
+  const selected = "editorHasSelection";
+  offer("doctor.quickTask", "doctor: quick task", `!doctorDrafting && ${selected}`, () => openTask("quick"));
+  offer("doctor.draft", "doctor: draft a task", `!doctorDrafting && ${selected}`, () => {
+    hooks.beginDrafting();
+    openTask("draft");
   });
+  offer("doctor.quickTaskDocument", "doctor: quick task for this document", `!doctorDrafting && !${selected}`, () =>
+    hooks.requestDocument(),
+  );
+  offer("doctor.draftDocument", "doctor: draft a task for this document", `!doctorDrafting && !${selected}`, () => {
+    hooks.beginDrafting();
+    hooks.requestDocument();
+  });
+  offer("doctor.addToDraft", "doctor: add to the draft", `doctorDrafting && ${selected}`, () => openTask("draft"));
+  offer("doctor.addDocumentToDraft", "doctor: add a request for this document to the draft", `doctorDrafting && !${selected}`, () =>
+    hooks.requestDocument(),
+  );
+  offer("doctor.stopDrafting", "doctor: stop drafting", "doctorDrafting", () => hooks.stopDrafting());
 
   // a numbered list's numbers, kept right as items come and go and move
   const renumber = () => {
@@ -1211,6 +1379,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     decorate,
     mark,
     proposals: showProposals,
+    focus: focusOn,
     dispose: () => {
       observer.disconnect();
       hover.dispose();

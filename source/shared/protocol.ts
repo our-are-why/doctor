@@ -4,10 +4,13 @@ import type {
   _Author_Doctor_,
   _Document_Doctor_,
   _DRAFT_Id__Node_,
+  _Id_Document_,
   _Id_Node_,
   _Id_Proposal_,
+  _Id_Request_,
   _Id_Task_,
   _Operation_Change_,
+  _Target_Request_,
   _Task_Doctor_,
 } from "./domain.next.ts";
 import type { _NonEmpty_ } from "./list.ts";
@@ -19,6 +22,8 @@ import {
   operationsSchema,
   proposalIdSchema,
   proposalOperationsSchema,
+  requestIdSchema,
+  requestTargetSchema,
   taskIdSchema,
   taskSchema,
   versionSchema,
@@ -47,7 +52,13 @@ export type _Message_Client_ =
   | _ACTIVATE_Message__Client_
   | _PARK_Message__Client_
   | _COMPLETE_Message__Client_
-  | _CANCEL_Message__Client_;
+  | _CANCEL_Message__Client_
+  | _DRAFTING_Message__Client_
+  | _REQUEST_Message__Client_
+  | _FORGET_Message__Client_
+  | _FOCUS_Message__Client_
+  | _UNFOCUS_Message__Client_
+  | _DISCARD_Message__Client_;
 
 interface __BASE_Message__Client_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -62,11 +73,11 @@ export interface _CHANGE_Message__Client_ extends __BASE_Message__Client_<"chang
   operations: _NonEmpty_<_Operation_Change_>;
 }
 
-// a task to make, about these nodes of the file, with what's to be done
+// a task to make, of one request: what's asked, and where it applies, if
+// anywhere in particular
 export interface _TASK_Message__Client_ extends __BASE_Message__Client_<"task"> {
-  file: string;
-  scope: Array<_Id_Node_>;
-  instruction: string;
+  text: string;
+  targets: Array<_Target_Request_>;
 }
 
 export interface _REVIEW_Message__Client_ extends __BASE_Message__Client_<"review"> {
@@ -99,6 +110,33 @@ export interface _ACTIVATE_Message__Client_ extends __BASE_Message__Client_<"act
   task: _Id_Task_;
 }
 
+// starts drafting a task: what's asked from then on goes into one draft,
+// made with the first request
+export interface _DRAFTING_Message__Client_ extends __BASE_Message__Client_<"drafting"> {}
+
+// a request for the task being drafted
+export interface _REQUEST_Message__Client_ extends __BASE_Message__Client_<"request"> {
+  text: string;
+  targets: Array<_Target_Request_>;
+}
+
+// a request taken out of a draft
+export interface _FORGET_Message__Client_ extends __BASE_Message__Client_<"forget"> {
+  task: _Id_Task_;
+  request: _Id_Request_;
+}
+
+// drafts a task that's already a draft, from the dashboard
+export interface _FOCUS_Message__Client_ extends __BASE_Message__Client_<"focus"> {
+  task: _Id_Task_;
+}
+
+export interface _UNFOCUS_Message__Client_ extends __BASE_Message__Client_<"unfocus"> {}
+
+export interface _DISCARD_Message__Client_ extends __BASE_Message__Client_<"discard"> {
+  task: _Id_Task_;
+}
+
 export interface _PARK_Message__Client_ extends __BASE_Message__Client_<"park"> {
   task: _Id_Task_;
 }
@@ -118,16 +156,23 @@ const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kin
   v.strictObject({ kind: v.literal("request"), feedback: v.pipe(v.string(), v.minLength(1)) }),
 ]);
 
+const requestTextSchema = v.pipe(v.string(), v.trim(), v.minLength(1, "a request says what it asks for"));
+
 export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v.variant("kind", [
   v.strictObject({
     kind: v.literal("task"),
-    file: v.string(),
-    scope: v.array(nodeIdSchema),
-    instruction: v.pipe(v.string(), v.trim(), v.minLength(1, "a task needs an instruction")),
+    text: requestTextSchema,
+    targets: v.array(requestTargetSchema),
   }),
   v.strictObject({ kind: v.literal("review"), task: taskIdSchema, proposal: proposalIdSchema, verdict: verdictSchema }),
   v.strictObject({ kind: v.literal("watch") }),
   v.strictObject({ kind: v.literal("activate"), task: taskIdSchema }),
+  v.strictObject({ kind: v.literal("drafting") }),
+  v.strictObject({ kind: v.literal("request"), text: requestTextSchema, targets: v.array(requestTargetSchema) }),
+  v.strictObject({ kind: v.literal("forget"), task: taskIdSchema, request: requestIdSchema }),
+  v.strictObject({ kind: v.literal("focus"), task: taskIdSchema }),
+  v.strictObject({ kind: v.literal("unfocus") }),
+  v.strictObject({ kind: v.literal("discard"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("park"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("complete"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("cancel"), task: taskIdSchema }),
@@ -147,7 +192,8 @@ export type _Message_Server_ =
   | _UPDATED_Message__Server_
   | _REFUSED_Message__Server_
   | _PROPOSALS_Message__Server_
-  | _TASKS_Message__Server_;
+  | _TASKS_Message__Server_
+  | _FOCUS_Message__Server_;
 
 interface __BASE_Message__Server_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -201,8 +247,59 @@ export interface _PROPOSALS_Message__Server_ extends __BASE_Message__Server_<"pr
 
 export interface _TASKS_Message__Server_ extends __BASE_Message__Server_<"tasks"> {
   tasks: Array<_Task_Doctor_>;
+  documents: Array<_Listed_Document_>;
+  drafting: Array<_Focus_Drafting_>;
   problems: Array<string>;
 }
+
+// what's being drafted, if anything: a task not made yet, before its first
+// request, or the draft it became
+export type _Focus_Drafting_ = _NEW_Focus__Drafting_ | _DRAFT_Focus__Drafting_;
+
+interface __BASE_Focus__Drafting_<__FocusKind__ extends string> {
+  kind: __FocusKind__;
+}
+
+export interface _NEW_Focus__Drafting_ extends __BASE_Focus__Drafting_<"new"> {}
+
+export interface _DRAFT_Focus__Drafting_ extends __BASE_Focus__Drafting_<"draft"> {
+  task: _Id_Task_;
+}
+
+// what's being drafted, as an editor shows it: sent whenever it changes,
+// with the draft's requests that target this file's document
+export interface _FOCUS_Message__Server_ extends __BASE_Message__Server_<"focus"> {
+  file: string;
+  drafting: Array<_View_Drafting_>;
+}
+
+export type _View_Drafting_ = _NEW_Focus__Drafting_ | _DRAFT_View__Drafting_;
+
+export interface _DRAFT_View__Drafting_ extends __BASE_Focus__Drafting_<"draft"> {
+  task: _Id_Task_;
+  name: string;
+  count: number;
+  here: Array<_Here_Request_>;
+}
+
+// a request with just its targets in one document
+export interface _Here_Request_ {
+  request: _Id_Request_;
+  text: string;
+  targets: Array<_Target_Request_>;
+}
+
+// a document in the workspace, as the dashboard lists it
+export interface _Listed_Document_ {
+  document: _Id_Document_;
+  title: string;
+  path: string;
+}
+
+export const focusDraftingSchema: v.GenericSchema<unknown, _Focus_Drafting_> = v.variant("kind", [
+  v.strictObject({ kind: v.literal("new") }),
+  v.strictObject({ kind: v.literal("draft"), task: taskIdSchema }),
+]);
 
 const openProposalSchema: v.GenericSchema<unknown, _Open_Proposal_> = v.strictObject({
   task: taskIdSchema,
@@ -218,7 +315,31 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
     open: v.array(openProposalSchema),
     problems: v.array(v.string()),
   }),
-  v.strictObject({ kind: v.literal("tasks"), tasks: v.array(taskSchema), problems: v.array(v.string()) }),
+  v.strictObject({
+    kind: v.literal("tasks"),
+    tasks: v.array(taskSchema),
+    documents: v.array(v.strictObject({ document: documentIdSchema, title: v.string(), path: v.string() })),
+    drafting: v.array(focusDraftingSchema),
+    problems: v.array(v.string()),
+  }),
+  v.strictObject({
+    kind: v.literal("focus"),
+    file: v.string(),
+    drafting: v.array(
+      v.variant("kind", [
+        v.strictObject({ kind: v.literal("new") }),
+        v.strictObject({
+          kind: v.literal("draft"),
+          task: taskIdSchema,
+          name: v.string(),
+          count: v.number(),
+          here: v.array(
+            v.strictObject({ request: requestIdSchema, text: v.string(), targets: v.array(requestTargetSchema) }),
+          ),
+        }),
+      ]),
+    ),
+  }),
   v.strictObject({ kind: v.literal("welcome"), caller: authorSchema }),
   v.strictObject({ kind: v.literal("opened"), file: v.string(), document: documentSchema }),
   v.strictObject({ kind: v.literal("unreadable"), file: v.string(), issues: issuesSchema }),
@@ -232,6 +353,7 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
 export const proposalPayloadSchema = v.strictObject({
   document: documentIdSchema,
   base: versionSchema,
+  answers: v.optional(v.array(requestIdSchema), () => []),
   operations: proposalOperationsSchema,
 });
 

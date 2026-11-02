@@ -2,12 +2,27 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import * as v from "valibot";
 import * as vscode from "vscode";
-import type { _Author_Doctor_, _Id_Document_, _Id_Task_, _Reason_Task_, _Task_Doctor_ } from "../shared/domain.next.ts";
+import type {
+  _Author_Doctor_,
+  _Document_Doctor_,
+  _Id_Document_,
+  _Id_Task_,
+  _Reason_Task_,
+  _Target_Request_,
+  _Task_Doctor_,
+} from "../shared/domain.next.ts";
+import { latestBrief, nameOf } from "../shared/brief.ts";
 import { parse, parseOwn } from "../shared/parse.ts";
 import {
   endpointUrlSchema,
+  focusDraftingSchema,
   tokenSchema,
   type _CHANGE_Message__Client_,
+  type _FORGET_Message__Client_,
+  type _Focus_Drafting_,
+  type _REQUEST_Message__Client_,
+  type _View_Drafting_,
+  type _Listed_Document_,
   type _Message_Server_,
   type _Open_Proposal_,
   type _REVIEW_Message__Client_,
@@ -22,13 +37,18 @@ import { presence, serveAgent, wake } from "./agent.ts";
 import { mintToken, startEndpoint, type _Connect_Endpoint_, type _Serve_Endpoint_ } from "./endpoint.ts";
 import {
   accept,
+  addRequest,
   cancelTask,
   completeTask,
+  createDraft,
   createTask,
+  discardDraft,
+  dropRequest,
   agentsTurn,
   listTasks,
   makeActive,
   parkTask,
+  readTask,
   reject,
   requestChanges,
   type _Place_Tasks_,
@@ -53,17 +73,31 @@ const outsideIssue = `only ${documentSuffix} files in the workspace can be opene
 
 const viewers = new Map<string, Set<_Send_Session_>>();
 
-// which file each document is in, found across the workspace and kept
-// current as files come and go
-const documentFiles = new Map<_Id_Document_, string>();
+interface _Known_Document_ {
+  file: string;
+  title: string;
+}
+
+// which file each document is in, and its title, found across the
+// workspace and kept current as files come and go
+const documentFiles = new Map<_Id_Document_, _Known_Document_>();
+
+const know = (document: _Document_Doctor_, file: string) =>
+  documentFiles.set(document.id, { file, title: document.content.title.text });
 
 async function indexFile(file: string): Promise<void> {
   const result = await readDocument(file);
-  if (result.kind === "parsed") documentFiles.set(result.value.id, file);
+  if (result.kind === "parsed") know(result.value, file);
 }
 
 function forgetFile(file: string): void {
-  for (const [id, known] of documentFiles) if (known === file) documentFiles.delete(id);
+  for (const [id, known] of documentFiles) if (known.file === file) documentFiles.delete(id);
+}
+
+function listedDocuments(): Array<_Listed_Document_> {
+  return [...documentFiles]
+    .map(([document, known]) => ({ document, title: known.title, path: vscode.workspace.asRelativePath(known.file) }))
+    .toSorted((first, second) => first.title.localeCompare(second.title) || first.path.localeCompare(second.path));
 }
 
 async function indexDocuments(): Promise<vscode.Disposable> {
@@ -80,23 +114,68 @@ async function indexDocuments(): Promise<vscode.Disposable> {
 function tasksPlace(): Array<_Place_Tasks_> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (folder === undefined) return [];
-  return [{ data: dataFolderOf(folder), fileOf: (id) => [documentFiles.get(id) ?? ""].filter((file) => file !== "") }];
+  return [
+    {
+      data: dataFolderOf(folder),
+      fileOf: (id) => [documentFiles.get(id)?.file ?? ""].filter((file) => file !== ""),
+      catalog: listedDocuments,
+    },
+  ];
 }
 
 // the sessions showing the task list
 const watchers = new Set<_Send_Session_>();
 
-// the proposals of the active task waiting for review on a file; only the
-// active task has any
+const documentsIn = (file: string) => [...documentFiles].filter(([, known]) => known.file === file).map(([id]) => id);
+
+const unknownIn = (targets: Array<_Target_Request_>) => [
+  ...new Set(targets.filter((target) => !documentFiles.has(target.document)).map((target) => target.document)),
+];
+
+// What's being drafted, if anything: where requests made in any editor go.
+// It's kept with the workspace, so it lasts across reloads.
+let drafting: Array<_Focus_Drafting_> = [];
+let memories: Array<vscode.Memento> = [];
+
+function draftOn(next: Array<_Focus_Drafting_>): void {
+  drafting = next;
+  for (const memory of memories) void memory.update("doctor.drafting", next);
+}
+
+const draftingTask = (task: _Id_Task_) => drafting.some((focus) => focus.kind === "draft" && focus.task === task);
+
+// what's being drafted as an editor of this file shows it
+function draftingIn(tasks: Array<_Task_Doctor_>, file: string): Array<_View_Drafting_> {
+  const documents = documentsIn(file);
+  return drafting.flatMap((focus): Array<_View_Drafting_> => {
+    if (focus.kind === "new") return [focus];
+    return tasks
+      .filter((task) => task.state === "draft" && task.id === focus.task)
+      .map((task) => {
+        const { requests } = latestBrief(task);
+        const here = requests.flatMap((request) => {
+          const targets = request.targets.filter((target) => documents.includes(target.document));
+          return targets.length === 0 ? [] : [{ request: request.id, text: request.text.text, targets }];
+        });
+        return { kind: "draft", task: task.id, name: nameOf(task), count: requests.length, here };
+      });
+  });
+}
+
+// The proposals of the active task waiting for review on a file; only the
+// active task has any. Each is headed by the requests it answers, or the
+// task's name when it names none.
 function openProposals(tasks: Array<_Task_Doctor_>, file: string): Array<_Open_Proposal_> {
-  const documents = [...documentFiles].filter(([, known]) => known === file).map(([id]) => id);
+  const documents = documentsIn(file);
   return tasks.flatMap((task) => {
     if (task.state !== "working" && task.state !== "reviewing") return [];
-    const latest = task.brief.versions[task.brief.versions.length - 1] ?? task.brief.versions[0];
+    const { requests } = latestBrief(task);
     return task.proposals.flatMap((proposal): Array<_Open_Proposal_> => {
       if (proposal.state !== "proposed" || !documents.includes(proposal.document)) return [];
       const { version } = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
-      return [{ task: task.id, instruction: latest.instruction.text, proposal: proposal.id, operations: version.operations }];
+      const answered = requests.filter((request) => version.answers.includes(request.id)).map((request) => request.text.text);
+      const instruction = answered.length > 0 ? answered.join(" · ") : nameOf(task);
+      return [{ task: task.id, instruction, proposal: proposal.id, operations: version.operations }];
     });
   });
 }
@@ -125,10 +204,15 @@ async function announce(problems: Array<string>, to: Array<_Send_Session_>): Pro
   const [place] = tasksPlace();
   if (place === undefined) return;
   const tasks = await listTasks(place);
-  for (const send of watchers) send({ kind: "tasks", tasks, problems: to.includes(send) ? problems : [] });
+  // a draft started, discarded or gone elsewhere is no longer being drafted
+  const lost = drafting.some((focus) => focus.kind === "draft" && !tasks.some((task) => task.id === focus.task && task.state === "draft"));
+  if (lost) draftOn([]);
+  const documents = listedDocuments();
+  for (const send of watchers) send({ kind: "tasks", tasks, documents, drafting, problems: to.includes(send) ? problems : [] });
   for (const [file, sends] of viewers) {
     for (const send of sends) {
       send({ kind: "proposals", file, open: openProposals(tasks, file), problems: to.includes(send) ? problems : [] });
+      send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
     }
   }
   wake();
@@ -145,21 +229,85 @@ const serve: _Serve_Endpoint_ = async (caller, request) => {
 
 async function makeTask(message: _TASK_Message__Client_, send: _Send_Session_): Promise<void> {
   const [place] = tasksPlace();
-  const read = await readDocument(message.file);
-  if (place === undefined || read.kind === "rejected") return;
-  const nodes = message.scope.length > 0 ? message.scope : read.value.content.children.map((block) => block.id);
-  await createTask(
-    place,
-    { text: message.instruction, overlay: [] },
-    nodes.map((node) => ({ document: read.value.id, node })),
-  );
+  if (place === undefined) return;
+  const unknown = unknownIn(message.targets);
+  if (unknown.length > 0) return announce([`there's no document ${unknown.join(", ")} in the workspace`], [send]);
+  await createTask(place, { text: message.text, overlay: [] }, message.targets);
   await announce([], [send]);
+}
+
+// A request for the task being drafted: the first makes the draft, and each
+// one after adds to it.
+async function addToDraft(message: _REQUEST_Message__Client_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  const [focus] = drafting;
+  if (place === undefined) return;
+  if (focus === undefined) return announce(["no task is being drafted: start drafting one first"], [send]);
+  const unknown = unknownIn(message.targets);
+  if (unknown.length > 0) return announce([`there's no document ${unknown.join(", ")} in the workspace`], [send]);
+  const text = { text: message.text, overlay: [] };
+  if (focus.kind === "new") {
+    const draft = await createDraft(place, text, message.targets);
+    draftOn([{ kind: "draft", task: draft.id }]);
+    return announce([], [send]);
+  }
+  const outcome = await addRequest(place, focus.task, text, message.targets);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
+}
+
+async function forgetRequest(message: _FORGET_Message__Client_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const outcome = await dropRequest(place, message.task, message.request);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
+}
+
+async function focusDraft(task: _Id_Task_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const read = await readTask(place, task);
+  if (read.kind === "rejected") return announce(read.issues, [send]);
+  if (read.value.state !== "draft") return announce([`task ${task} is ${read.value.state}: only a draft can be drafted`], [send]);
+  draftOn([{ kind: "draft", task }]);
+  return announce([], [send]);
+}
+
+async function discard(task: _Id_Task_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const outcome = await discardDraft(place, task);
+  if (outcome.kind === "done" && draftingTask(task)) draftOn([]);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
+}
+
+// a task of one request for whole documents, picked in the Explorer: the one
+// clicked, or every one selected
+async function newTaskForFiles(clicked: unknown, selected: unknown): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const uris = Array.isArray(selected) ? selected : [clicked];
+  const files = uris.flatMap((uri) => (uri instanceof vscode.Uri && uri.fsPath.endsWith(documentSuffix) ? [uri.fsPath] : []));
+  const read = await Promise.all(files.map((file) => readDocument(file)));
+  const targets = read.flatMap((result): Array<_Target_Request_> => (result.kind === "parsed" ? [{ kind: "document", document: result.value.id }] : []));
+  if (targets.length === 0) {
+    void vscode.window.showWarningMessage(`doctor: pick one or more readable *${documentSuffix} files for the task`);
+    return;
+  }
+  const instruction = await vscode.window.showInputBox({
+    title: "doctor: quick task",
+    prompt: targets.length === 1 ? "What should change in this document?" : `What should change in these ${targets.length} documents?`,
+    ignoreFocusOut: true,
+  });
+  if (instruction === undefined || instruction.trim() === "") return;
+  await createTask(place, { text: instruction.trim(), overlay: [] }, targets);
+  await announce([], []);
 }
 
 async function activateTask(task: _Id_Task_, send: _Send_Session_): Promise<void> {
   const [place] = tasksPlace();
   if (place === undefined) return;
   const outcome = await makeActive(place, task);
+  if (outcome.kind === "done" && draftingTask(task)) draftOn([]);
   return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
 }
 
@@ -226,14 +374,17 @@ async function installCommand(context: vscode.ExtensionContext): Promise<string>
 
 async function open(file: string, send: _Send_Session_): Promise<void> {
   const result = await readDocument(file);
-  if (result.kind === "parsed") documentFiles.set(result.value.id, file);
+  if (result.kind === "parsed") know(result.value, file);
   send(
     result.kind === "parsed"
       ? { kind: "opened", file, document: result.value }
       : { kind: "unreadable", file, issues: result.issues },
   );
   const [place] = tasksPlace();
-  if (place !== undefined) send({ kind: "proposals", file, open: openProposals(await listTasks(place), file), problems: [] });
+  if (place === undefined) return;
+  const tasks = await listTasks(place);
+  send({ kind: "proposals", file, open: openProposals(tasks, file), problems: [] });
+  send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
 }
 
 async function change(caller: _Author_Doctor_, message: _CHANGE_Message__Client_, send: _Send_Session_) {
@@ -306,6 +457,30 @@ const connect: _Connect_Endpoint_ = (caller, send) => {
         case "cancel":
           if (caller === "human") void dropTask(message.task, send);
           return;
+        case "drafting":
+          if (caller === "human") {
+            draftOn([{ kind: "new" }]);
+            void announce([], [send]);
+          }
+          return;
+        case "request":
+          if (caller === "human") void addToDraft(message, send);
+          return;
+        case "forget":
+          if (caller === "human") void forgetRequest(message, send);
+          return;
+        case "focus":
+          if (caller === "human") void focusDraft(message.task, send);
+          return;
+        case "unfocus":
+          if (caller === "human") {
+            draftOn([]);
+            void announce([], [send]);
+          }
+          return;
+        case "discard":
+          if (caller === "human") void discard(message.task, send);
+          return;
       }
     },
     close: () => {
@@ -353,6 +528,9 @@ function keptPorts(context: vscode.ExtensionContext): Array<number> {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  memories = [context.workspaceState];
+  const kept = parse(v.array(focusDraftingSchema), context.workspaceState.get("doctor.drafting"));
+  drafting = kept.kind === "parsed" ? kept.value : [];
   const tokens = { human: mintToken(), agent: agentToken(context) };
   const running = await startEndpoint(tokens, connect, serve, keptPorts(context));
   context.subscriptions.push({ dispose: () => void running.close() });
@@ -379,5 +557,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       showDashboard(context.extensionUri, endpoint, tokens, vscode.ViewColumn.Active),
     ),
     vscode.commands.registerCommand("doctor.newDocument", newDocumentCommand),
+    vscode.commands.registerCommand("doctor.newTaskForFiles", newTaskForFiles),
   );
 }

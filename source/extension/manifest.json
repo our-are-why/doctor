@@ -35,7 +35,14 @@
     },
     "commands": [
       { "command": "doctor.newDocument", "title": "doctor: new document" },
-      { "command": "doctor.openDashboard", "title": "doctor: open the task dashboard" }
-    ]
+      { "command": "doctor.openDashboard", "title": "doctor: open the task dashboard" },
+      { "command": "doctor.newTaskForFiles", "title": "doctor: quick task for these documents" }
+    ],
+    "menus": {
+      "explorer/context": [
+        { "command": "doctor.newTaskForFiles", "when": "resourceFilename =~ /\\.doctor\\.json$/", "group": "doctor" }
+      ],
+      "commandPalette": [{ "command": "doctor.newTaskForFiles", "when": "false" }]
+    }
   }
 }

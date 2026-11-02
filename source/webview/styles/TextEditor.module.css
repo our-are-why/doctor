@@ -4,6 +4,68 @@
   height: 100vh;
 }
 
+/* the bar above the editor, for a request about the whole document */
+
+.requestBar,
+.draftingBar {
+  align-items: center;
+  border-bottom: 1px solid var(--vscode-widget-border, transparent);
+  display: flex;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  gap: 0.4rem;
+  padding: 4px 8px;
+}
+
+/* while a draft's being made, the bar says so */
+.draftingBar {
+  box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+}
+
+.barLabel {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.barLabel:empty {
+  display: none;
+}
+
+.barButton,
+.barPrimary {
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.15rem 0.6rem;
+  white-space: nowrap;
+}
+
+.barButton {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.barPrimary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.requestInput {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  color: var(--vscode-input-foreground);
+  flex: 1;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  outline: none;
+  padding: 3px 6px;
+}
+
+.requestInput:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
 .host {
   flex: 1;
   min-height: 0;
@@ -67,6 +129,20 @@
 :global(.monaco-editor) .collapse {
   color: transparent;
   letter-spacing: -1ch;
+}
+
+/* a request of the draft being made: a dot in the margin lane, beside where
+   a quote's bar goes, and a dotted line under a passage's words */
+:global(.monaco-editor) .requestMark {
+  background: radial-gradient(
+    circle at 10px 50%,
+    color-mix(in srgb, var(--vscode-editor-foreground) 60%, transparent) 2.5px,
+    transparent 3px
+  );
+}
+
+:global(.monaco-editor) .requestPassage {
+  border-bottom: 1px dotted color-mix(in srgb, var(--vscode-editor-foreground) 60%, transparent);
 }
 
 /* a quote's bar, in the margin lane just left of the text */
@@ -209,6 +285,15 @@
 
 :global(.monaco-editor) .removed {
   text-decoration: line-through;
+}
+
+/* what a proposal moves elsewhere: dimmed where it is now */
+:global(.monaco-editor) .movedLine {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 5%, transparent);
+}
+
+:global(.monaco-editor) .moved {
+  opacity: 0.45;
 }
 
 .proposalAdded {

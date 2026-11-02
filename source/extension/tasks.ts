@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { applyOperations } from "../shared/apply.ts";
 import type {
@@ -16,17 +16,20 @@ import type {
   _Holder_Text_,
   _Id_Document_,
   _Id_Proposal_,
+  _Id_Request_,
   _Id_Task_,
   _Operation_Change_,
   _PARK_Transition__Task_,
   _Proposal_Task_,
   _PROPOSED_Proposal__Task_,
-  _Ref_Change_,
   _Reason_Task_,
+  _Ref_Change_,
   _Ref_Node_,
+  _Request_Task_,
   _RESUME_Transition__Task_,
   _REVISING_Proposal__Task_,
   _Stamp_Doctor_,
+  _Target_Request_,
   _Task_Doctor_,
   _Text_Doctor_,
   _Version_Document_,
@@ -36,12 +39,15 @@ import type {
 import { mintId } from "../shared/id.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
 import { parse, parseOwn, type _Result_Parse_ } from "../shared/parse.ts";
+import { latestBrief } from "../shared/brief.ts";
 import { realize } from "../shared/proposals.ts";
+import type { _Listed_Document_ } from "../shared/protocol.ts";
 import {
   changeIdSchema,
   nodeIdSchema,
   numberBriefSchema,
   proposalIdSchema,
+  requestIdSchema,
   taskIdSchema,
   taskSchema,
   timeSchema,
@@ -51,10 +57,12 @@ import { makeChange } from "./changes.ts";
 import { exclusively, readDocument, writeJson } from "./documents.ts";
 import { loadVersion, nodeKey, storeVersion, textKey } from "./store.ts";
 
-// where tasks are kept, and where the documents they're about are
+// where tasks are kept, where the documents they're about are, and which
+// documents the project has
 export interface _Place_Tasks_ {
   data: string;
   fileOf: (document: _Id_Document_) => Array<string>;
+  catalog: () => Array<_Listed_Document_>;
 }
 
 export type _Outcome_Task_<__Value__> = _DONE_Outcome__Task_<__Value__> | _REFUSED_Outcome__Task_;
@@ -72,10 +80,11 @@ export interface _REFUSED_Outcome__Task_ extends __BASE_Outcome__Task_<"refused"
 }
 
 // what a proposal says: which document, the version of it the agent was
-// shown, and the operations that would change it
+// shown, the requests it answers, and the operations that would change it
 export interface _Payload_Proposal_ {
   document: _Id_Document_;
   base: _Version_Document_;
+  answers: Array<_Id_Request_>;
   operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
 }
 
@@ -309,13 +318,16 @@ export async function makeActive(place: _Place_Tasks_, id: _Id_Task_): Promise<_
 
 // A task you make is the agent's to work on and yours to review, each
 // proposal before it changes anything; it becomes the active one.
-export async function createTask(
-  place: _Place_Tasks_,
-  instruction: _Text_Doctor_,
-  scope: Array<_Ref_Node_>,
-): Promise<_Activated_Task_> {
+const requestOf = (text: _Text_Doctor_, targets: Array<_Target_Request_>, made: _Stamp_Doctor_): _Request_Task_ => ({
+  id: mintId(requestIdSchema, randomBytes(10)),
+  made,
+  text,
+  targets,
+});
+
+function draftOf(text: _Text_Doctor_, targets: Array<_Target_Request_>): _DRAFT_Task__Doctor_ {
   const created = stamp("human");
-  const draft: _DRAFT_Task__Doctor_ = {
+  return {
     kind: "task",
     formatVersion: 1,
     state: "draft",
@@ -323,12 +335,68 @@ export async function createTask(
     created,
     roles: { worker: "agent", reviewer: "human" },
     reviewTiming: "before",
-    brief: { versions: [{ number: parseOwn(numberBriefSchema, 1), written: created, instruction, scope }] },
+    brief: { versions: [{ number: parseOwn(numberBriefSchema, 1), written: created, requests: [requestOf(text, targets, created)] }] },
   };
+}
+
+export async function createTask(
+  place: _Place_Tasks_,
+  text: _Text_Doctor_,
+  targets: Array<_Target_Request_>,
+): Promise<_Activated_Task_> {
+  const draft = draftOf(text, targets);
   const parked = await parkOthers(place, draft.id);
-  const working = activate(draft, created);
+  const working = activate(draft, draft.created);
   await exclusively(taskFile(place, working.id), () => writeJson(taskFile(place, working.id), working));
   return { task: working, parked };
+}
+
+// A draft, made from its first request, to add more to before it's started.
+// Until then the agent never sees it, so its brief is changed in place.
+export async function createDraft(
+  place: _Place_Tasks_,
+  text: _Text_Doctor_,
+  targets: Array<_Target_Request_>,
+): Promise<_DRAFT_Task__Doctor_> {
+  const draft = draftOf(text, targets);
+  await exclusively(taskFile(place, draft.id), () => writeJson(taskFile(place, draft.id), draft));
+  return draft;
+}
+
+export function addRequest(
+  place: _Place_Tasks_,
+  id: _Id_Task_,
+  text: _Text_Doctor_,
+  targets: Array<_Target_Request_>,
+): Promise<_Outcome_Task_<_Id_Request_>> {
+  return updateTask(place, id, async (task) => {
+    if (task.state !== "draft") return refuse(`task ${id} is ${task.state}: requests are added to drafts`);
+    const [version] = task.brief.versions;
+    const request = requestOf(text, targets, stamp("human"));
+    const requests: _NonEmpty_<_Request_Task_> = [...version.requests, request];
+    return done({ task: { ...task, brief: { versions: [{ ...version, requests }] } }, value: request.id });
+  });
+}
+
+export function dropRequest(place: _Place_Tasks_, id: _Id_Task_, request: _Id_Request_): Promise<_Outcome_Task_<_Id_Request_>> {
+  return updateTask(place, id, async (task) => {
+    if (task.state !== "draft") return refuse(`task ${id} is ${task.state}: requests are taken out of drafts`);
+    const [version] = task.brief.versions;
+    const [first, ...rest] = version.requests.filter((each) => each.id !== request);
+    if (first === undefined) return refuse("a draft keeps at least one request: discard the draft instead");
+    return done({ task: { ...task, brief: { versions: [{ ...version, requests: [first, ...rest] }] } }, value: request });
+  });
+}
+
+// A draft was never started, so discarding it leaves nothing behind.
+export function discardDraft(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
+  return exclusively(taskFile(place, id), async () => {
+    const read = await readTask(place, id);
+    if (read.kind === "rejected") return { kind: "refused", issues: read.issues };
+    if (read.value.state !== "draft") return refuse(`task ${id} is ${read.value.state}: only a draft can be discarded`);
+    await rm(taskFile(place, id));
+    return done(id);
+  });
 }
 
 // a document as the agent is shown it, its version stored so a proposal made
@@ -343,9 +411,6 @@ export async function show(place: _Place_Tasks_, id: _Id_Document_): Promise<_Ou
 
 const isActive = (task: _Task_Doctor_): task is _ACTIVE_Task__Doctor_ => task.state === "working" || task.state === "reviewing";
 
-const scopedDocuments = (task: _Task_Doctor_) =>
-  new Set(task.brief.versions.flatMap((version) => version.scope.map((ref) => ref.document)));
-
 // A proposal is checked against the version it was made from: its operations
 // have to apply to what the agent was shown. One that follows a request for
 // changes on the same document is that proposal's next round.
@@ -357,20 +422,24 @@ export function propose(
 ): Promise<_Outcome_Task_<_Id_Proposal_>> {
   return updateTask(place, id, async (task) => {
     if (task.state !== "working") return refuse(`task ${id} is ${task.state}, so it takes no proposals`);
-    if (!scopedDocuments(task).has(payload.document)) return refuse(`document ${payload.document} isn't in task ${id}'s scope`);
+    const latest = latestBrief(task);
+    const known = new Set<string>(latest.requests.map((request) => request.id));
+    const unknown = payload.answers.filter((answered) => !known.has(answered));
+    if (unknown.length > 0) return refuse(`task ${id} has no request ${unknown.join(", ")}`);
     const base = await loadVersion(place.data, payload.base);
     if (base.kind === "rejected") return refuse(`version ${payload.base} isn't one doctor showed; read the document again`);
     if (base.value.id !== payload.document) return refuse(`version ${payload.base} is of another document`);
-    const tried = applyOperations(base.value, realize(payload.operations, mintNode), {
+    const realized = realize(payload.operations, mintNode);
+    const tried = applyOperations(base.value, realized, {
       document: payload.document,
       id: mintId(changeIdSchema, randomBytes(10)),
     });
     if (tried.kind === "refused") return refuse(`the operations don't apply to the version they were made from: ${tried.issue}`);
-    const latest = task.brief.versions.at(-1) ?? task.brief.versions[0];
     const version: _Version_Proposal_ = {
       written: stamp(author),
       base: payload.base,
       answering: latest.number,
+      answers: payload.answers,
       operations: payload.operations,
     };
     const revising = task.proposals.find(

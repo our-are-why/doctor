@@ -9,9 +9,22 @@ one, any `*.doctor.json` opens in doctor's editor, a text editor like VS
 Code's own, and every save becomes a version in the document's history. A
 read-only reading view renders the same document.
 
-Select blocks and run "doctor: new task" to give the agent a task. What it
-proposes shows in the editor, to accept, reject or send back with feedback,
-and the dashboard lists the tasks. The agent works through the `doctor`
+A task is its requests: the changes you want, each aimed at places or,
+without targets, at the whole project. There are two ways to make one:
+
+- **A quick task**: one request, and the agent starts on it at once. Select
+  a phrase, a block or several places and right-click "doctor: quick task";
+  type in the bar above a document for the whole document; use the
+  dashboard's Quick task… for the whole project, or right-click files in the
+  Explorer, "doctor: quick task for these documents", for those files.
+- **Draft a task**: a task of many requests. Right-click "doctor: draft a
+  task" on a selection, or Draft a task in the bar or on the dashboard.
+  While you're drafting, every request you make in any document, by
+  right-click "doctor: add to the draft" or in the bar, goes into the draft,
+  marked in the margin, until you click Start task.
+
+What the agent proposes shows in the editor, to accept, reject or send back
+with feedback, and the dashboard lists the tasks. The agent works through the `doctor`
 command: tell it once to run `doctor wait` and take the step it's given.
 Notes come next.
 

@@ -18,6 +18,7 @@ import type {
   _Id_Node_,
   _Id_Note_,
   _Id_Proposal_,
+  _Id_Request_,
   _Id_Task_,
   _Language_Code_,
   _ListItem_Document_,
@@ -35,6 +36,7 @@ import type {
   _Reason_Task_,
   _Ref_Change_,
   _Ref_Node_,
+  _Request_Task_,
   _REQUESTED_Round__Proposal_,
   _Review_Change_,
   _Round_Proposal_,
@@ -42,6 +44,7 @@ import type {
   _Stamp_Doctor_,
   _STANDING_Round__Proposal_,
   _Target_Link_,
+  _Target_Request_,
   _Task_Doctor_,
   _Text_Doctor_,
   _Time_Doctor_,
@@ -52,7 +55,7 @@ import type {
   _Words_Former_,
 } from "./domain.next.ts";
 import { documentIssues } from "./invariants.ts";
-import { parse } from "./parse.ts";
+import { parse, parseOwn } from "./parse.ts";
 
 // ids are ten random characters from [0-9a-z]
 const idPattern = /^[0-9a-z]{10}$/;
@@ -65,6 +68,7 @@ export const noteIdSchema: v.GenericSchema<unknown, _Id_Note_> = v.custom<_Id_No
 export const changeIdSchema: v.GenericSchema<unknown, _Id_Change_> = v.custom<_Id_Change_>(isId, idMessage);
 export const taskIdSchema: v.GenericSchema<unknown, _Id_Task_> = v.custom<_Id_Task_>(isId, idMessage);
 export const proposalIdSchema: v.GenericSchema<unknown, _Id_Proposal_> = v.custom<_Id_Proposal_>(isId, idMessage);
+export const requestIdSchema: v.GenericSchema<unknown, _Id_Request_> = v.custom<_Id_Request_>(isId, idMessage);
 
 // hashes are SHA-256, in lowercase hex
 const isHash = (input: unknown) => typeof input === "string" && /^[0-9a-f]{64}$/.test(input);
@@ -373,17 +377,59 @@ const reasonSchema: v.GenericSchema<unknown, _Reason_Task_> = v.variant("kind", 
 
 const partySchema = v.picklist(["human", "agent", "anybody"]);
 
-const briefVersionSchema: v.GenericSchema<unknown, _Version_Brief_> = v.strictObject({
-  number: numberBriefSchema,
-  written: stampSchema,
-  instruction: textSchema,
-  scope: v.array(refNodeSchema),
+export const requestTargetSchema: v.GenericSchema<unknown, _Target_Request_> = v.variant("kind", [
+  v.strictObject({ kind: v.literal("document"), document: documentIdSchema }),
+  v.strictObject({ kind: v.literal("node"), document: documentIdSchema, node: nodeIdSchema }),
+  v.strictObject({ kind: v.literal("passage"), document: documentIdSchema, holder: holderSchema, range: rangeSchema }),
+]);
+
+const requestSchema: v.GenericSchema<unknown, _Request_Task_> = v.strictObject({
+  id: requestIdSchema,
+  made: stampSchema,
+  text: textSchema,
+  targets: v.array(requestTargetSchema),
 });
 
+// A brief written before requests had one instruction and a scope: nodes,
+// with no kind at first, later whole documents or nodes. It reads as one
+// request, aimed at its scope.
+const earlierTargetSchema: v.GenericSchema<unknown, _Target_Request_> = v.union([
+  v.variant("kind", [
+    v.strictObject({ kind: v.literal("document"), document: documentIdSchema }),
+    v.strictObject({ kind: v.literal("node"), document: documentIdSchema, node: nodeIdSchema }),
+  ]),
+  v.pipe(
+    refNodeSchema,
+    v.transform((ref): _Target_Request_ => ({ kind: "node", document: ref.document, node: ref.node })),
+  ),
+]);
+
+const earlierRequest = parseOwn(requestIdSchema, "r000000001");
+
+const briefVersionSchema: v.GenericSchema<unknown, _Version_Brief_> = v.union([
+  v.strictObject({
+    number: numberBriefSchema,
+    written: stampSchema,
+    requests: v.tupleWithRest([requestSchema], requestSchema),
+  }),
+  v.pipe(
+    v.strictObject({ number: numberBriefSchema, written: stampSchema, instruction: textSchema, scope: v.array(earlierTargetSchema) }),
+    v.transform(
+      (earlier): _Version_Brief_ => ({
+        number: earlier.number,
+        written: earlier.written,
+        requests: [{ id: earlierRequest, made: earlier.written, text: earlier.instruction, targets: earlier.scope }],
+      }),
+    ),
+  ),
+]);
+
+// proposals made before they said what they answered answer nothing named
 const proposalVersionSchema: v.GenericSchema<unknown, _Version_Proposal_> = v.strictObject({
   written: stampSchema,
   base: versionSchema,
   answering: numberBriefSchema,
+  answers: v.optional(v.array(requestIdSchema), () => []),
   operations: proposalOperationsSchema,
 });
 
