@@ -1,0 +1,64 @@
+/* a task's overview, under the bar's task while it's hovered, as VS Code's
+   hovers look */
+.card {
+  background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  box-sizing: border-box;
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  max-width: min(440px, calc(100vw - 16px));
+  padding: 10px 12px;
+  position: fixed;
+  z-index: 100;
+}
+
+.head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.6rem;
+}
+
+.id {
+  font-family: var(--vscode-editor-font-family, monospace), monospace;
+}
+
+.state,
+.heading,
+.aim,
+.facts dt {
+  color: var(--vscode-descriptionForeground);
+}
+
+.heading {
+  font-size: 0.85em;
+  margin: 10px 0 4px;
+}
+
+.requests {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.requests li + li {
+  margin-top: 2px;
+}
+
+.note {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.facts {
+  display: grid;
+  gap: 2px 12px;
+  grid-template-columns: auto 1fr;
+  margin: 10px 0 0;
+}
+
+.facts dd {
+  margin: 0;
+}

@@ -10,7 +10,7 @@ import type {
 } from "../shared/domain.next.ts";
 import { latestBrief, nameOf } from "../shared/brief.ts";
 import { parse } from "../shared/parse.ts";
-import { proposalPayloadSchema } from "../shared/protocol.ts";
+import { proposalPayloadSchema, submitPayloadSchema } from "../shared/protocol.ts";
 import { documentIdSchema } from "../shared/schema.ts";
 import { sliceOf } from "../shared/text.ts";
 import { indexNodes, textOfNode, type _Index_Document_ } from "../shared/tree.ts";
@@ -110,12 +110,12 @@ async function taskView(place: _Place_Tasks_, task: _ACTIVE_Task__Doctor_) {
 function nextStep(task: _WORKING_Task__Doctor_): string {
   const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
   if (revising.length > 0) {
-    return `revise proposal ${revising.join(", ")} as its feedback asks, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit\`, then \`doctor wait\``;
+    return `revise proposal ${revising.join(", ")} as its feedback asks, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit --note "<what you changed>"\`, then \`doctor wait\``;
   }
   if (task.proposals.length === 0) {
-    return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers; a request without targets reaches every document, which `doctor documents` lists; then `doctor submit` to hand them over, and `doctor wait`";
+    return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers; a request without targets reaches every document, which `doctor documents` lists; then `doctor submit --note \"<what you did, or why nothing needed changing>\"` to hand them over, and `doctor wait`";
   }
-  return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it; then `doctor submit`, and `doctor wait`";
+  return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it; then `doctor submit --note \"<what you did>\"`, and `doctor wait`";
 }
 
 // what an agent is waiting on while it's the human's turn
@@ -258,9 +258,12 @@ export async function serveAgent(
   }
   if (route === "POST /submit") {
     if (task === undefined) return issues(404, ["there's no active task to submit"]);
-    const outcome = await submit(place, task.id);
+    const payload = parse(submitPayloadSchema, request.body);
+    if (payload.kind === "rejected") return issues(400, payload.issues);
+    const outcome = await submit(place, task.id, payload.value === null ? "" : payload.value.note.trim());
     if (outcome.kind === "refused") return issues(409, outcome.issues);
-    return answer(200, { task: task.id, state: outcome.value });
+    const { state, issues: problems } = outcome.value;
+    return answer(200, problems.length === 0 ? { task: task.id, state } : { task: task.id, state, problems });
   }
   return issues(404, [`there's no route ${route}`]);
 }

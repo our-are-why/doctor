@@ -261,8 +261,13 @@ answer.
   lists its requests to take out, and can continue drafting it, start it
   or discard it. a task can be drafted while another is active, and edits
   made while drafting go to the document, as there's no task mode yet.
-- proposals have rounds. accept applies a proposal to the document
-  straight away, as a change whose source is the proposal.
+- proposals have rounds. accept is a decision: the task's accepted
+  proposals apply to their documents when it completes, each as a change
+  whose source is the proposal, and one that no longer fits goes back for
+  review. until then a decision can be changed: an accepted or rejected
+  proposal can be reopened, or sent back for changes. there's no head yet,
+  so the editor shows the trunk, an accepted proposal as a collapsed row.
+  proposals accepted before this applied at once.
 - the agent proposes everything, then submits. a submitted task completes
   on its own once every proposal is accepted or rejected, and goes back to
   working when one is sent back for changes.

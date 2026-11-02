@@ -22,6 +22,7 @@ import type {
   _PARK_Transition__Task_,
   _Proposal_Task_,
   _PROPOSED_Proposal__Task_,
+  _REJECTED_Proposal__Task_,
   _Reason_Task_,
   _Ref_Change_,
   _Ref_Node_,
@@ -142,6 +143,7 @@ const activate: _ACTIVATE_Transition__Task_ = (task, activated) => ({
   proposals: [],
   applied: [],
   reviews: [],
+  submissions: [],
 });
 
 const stated = (text: string): _Reason_Task_ => ({ kind: "stated", text: { text, overlay: [] } });
@@ -174,8 +176,10 @@ const park: _PARK_Transition__Task_ = (task, parked) => ({
   activated: task.activated,
   applied: task.applied,
   reviews: task.reviews,
-  proposals: closeProposals(task.proposals, parked, stated("the task was parked")),
+  submissions: task.submissions,
+  proposals: task.proposals,
   parked,
+  was: task.state,
 });
 
 const complete: _COMPLETE_Transition__Task_ = (task, completed) => ({
@@ -190,6 +194,7 @@ const complete: _COMPLETE_Transition__Task_ = (task, completed) => ({
   activated: task.activated,
   applied: task.applied,
   reviews: task.reviews,
+  submissions: task.submissions,
   proposals: task.proposals,
   completed,
 });
@@ -206,6 +211,7 @@ const cancel: _CANCEL_Transition__Task_ = (task, canceled, reason) => ({
   activated: task.activated,
   applied: task.applied,
   reviews: task.reviews,
+  submissions: task.submissions,
   proposals: closeProposals(task.proposals, canceled, reason),
   canceled,
   reason,
@@ -214,7 +220,7 @@ const cancel: _CANCEL_Transition__Task_ = (task, canceled, reason) => ({
 const resume: _RESUME_Transition__Task_ = (task, activated) => ({
   kind: task.kind,
   formatVersion: task.formatVersion,
-  state: "working",
+  state: task.was,
   id: task.id,
   created: task.created,
   roles: task.roles,
@@ -223,6 +229,7 @@ const resume: _RESUME_Transition__Task_ = (task, activated) => ({
   activated,
   applied: task.applied,
   reviews: task.reviews,
+  submissions: task.submissions,
   proposals: task.proposals,
 });
 
@@ -244,12 +251,21 @@ export function agentsTurn(tasks: Array<_Task_Doctor_>): Array<_WORKING_Task__Do
 }
 
 // A task in review completes once everything proposed for it is decided:
-// accepted or rejected, none of it sent back to be revised.
-function settled(task: _ACTIVE_Task__Doctor_, at: _Stamp_Doctor_): _Task_Doctor_ {
-  const finals = task.proposals.filter(isFinal);
-  return task.state === "reviewing" && finals.length === task.proposals.length
-    ? complete({ ...task, proposals: finals }, at)
-    : task;
+// accepted or rejected, none of it sent back to be revised. Completing
+// applies what was accepted; what no longer fits goes back for review, with
+// why, and the task stays open.
+async function settle(
+  place: _Place_Tasks_,
+  task: _ACTIVE_Task__Doctor_,
+  at: _Stamp_Doctor_,
+): Promise<{ task: _Task_Doctor_; issues: Array<string> }> {
+  if (task.state !== "reviewing" || !task.proposals.every(isFinal)) return { task, issues: [] };
+  const merged = await merge(place, task);
+  const finals = merged.proposals.filter(isFinal);
+  const next = { ...task, proposals: merged.proposals, applied: merged.applied };
+  return finals.length === merged.proposals.length
+    ? { task: complete({ ...next, proposals: finals }, at), issues: merged.issues }
+    : { task: next, issues: merged.issues };
 }
 
 export function parkTask(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
@@ -271,19 +287,31 @@ async function parkOthers(place: _Place_Tasks_, id: _Id_Task_): Promise<Array<_I
   return parked;
 }
 
-// Ends a task as done. A proposal still waiting for review has to be decided
-// first; one the agent is revising is withdrawn.
-export function completeTask(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Id_Task_>> {
+// Ends a task as done, applying what was accepted in it. A proposal still
+// waiting for review has to be decided first; one the agent is revising is
+// withdrawn. One accepted that no longer fits goes back for review, and the
+// task stays open, unless it's parked, where it can't be reviewed, so it's
+// withdrawn too.
+export function completeTask(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Settled_Task_>> {
   return updateTask(place, id, async (task) => {
-    if (task.state === "parked") return done({ task: complete(task, stamp("human")), value: task.id });
+    if (task.state === "parked") {
+      const completed = stamp("human");
+      const merged = await merge(place, { ...task, proposals: closeProposals(task.proposals, completed, stated("the task was completed")) });
+      const proposals = closeProposals(merged.proposals, completed, stated("it no longer fit the document"));
+      return done({ task: complete({ ...task, proposals, applied: merged.applied }, completed), value: { issues: merged.issues } });
+    }
     if (!isActive(task)) return refuse(`task ${id} is ${task.state}, so it can't be completed`);
     const waiting = task.proposals.filter((proposal) => proposal.state === "proposed").map((proposal) => proposal.id);
     if (waiting.length > 0) {
       return refuse(`proposal ${waiting.join(", ")} is still waiting for review: accept or reject it before completing the task`);
     }
     const completed = stamp("human");
-    const proposals = closeProposals(task.proposals, completed, stated("the task was completed"));
-    return done({ task: complete({ ...task, proposals }, completed), value: task.id });
+    const merged = await merge(place, { ...task, proposals: closeProposals(task.proposals, completed, stated("the task was completed")) });
+    const finals = merged.proposals.filter(isFinal);
+    if (finals.length !== merged.proposals.length) {
+      return done({ task: { ...task, proposals: merged.proposals, applied: merged.applied }, value: { issues: merged.issues } });
+    }
+    return done({ task: complete({ ...task, proposals: finals, applied: merged.applied }, completed), value: { issues: merged.issues } });
   });
 }
 
@@ -295,11 +323,12 @@ export function cancelTask(place: _Place_Tasks_, id: _Id_Task_, reason: _Reason_
 }
 
 export interface _Activated_Task_ {
-  task: _WORKING_Task__Doctor_;
+  task: _ACTIVE_Task__Doctor_;
   parked: Array<_Id_Task_>;
 }
 
-// Makes a draft or a parked task the one being worked on, parking any other.
+// Makes a draft or a parked task the active one, parking any other: a draft
+// to be worked on, a parked task as it was when it was parked.
 export async function makeActive(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Activated_Task_>> {
   const parked = await parkOthers(place, id);
   const outcome = await updateTask(place, id, async (task) => {
@@ -308,8 +337,8 @@ export async function makeActive(place: _Place_Tasks_, id: _Id_Task_): Promise<_
       return done({ task: working, value: working });
     }
     if (task.state === "parked") {
-      const working = resume(task, stamp("human"));
-      return done({ task: working, value: working });
+      const resumed = resume(task, stamp("human"));
+      return done({ task: resumed, value: resumed });
     }
     return refuse(`task ${id} is ${task.state}, so it can't be made the active one`);
   });
@@ -460,17 +489,24 @@ export function propose(
 }
 
 // The agent hands the task over once it's proposed everything the task
-// needs, and it completes at once if nothing's left to review. What was
-// sent back for changes is revised first.
-export function submit(place: _Place_Tasks_, id: _Id_Task_): Promise<_Outcome_Task_<_Task_Doctor_["state"]>> {
+// needs, with a note on what it did, or why nothing needed changing, and it
+// completes at once if nothing's left to review. What was sent back for
+// changes is revised first.
+export function submit(
+  place: _Place_Tasks_,
+  id: _Id_Task_,
+  note: string,
+): Promise<_Outcome_Task_<{ state: _Task_Doctor_["state"]; issues: Array<string> }>> {
   return updateTask(place, id, async (task) => {
     if (task.state !== "working") return refuse(`task ${id} is ${task.state}, so there's nothing to submit`);
     const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
     if (revising.length > 0) {
       return refuse(`proposal ${revising.join(", ")} was sent back for changes: revise it with doctor propose, then submit`);
     }
-    const submitted = settled({ ...task, state: "reviewing" }, stamp("agent"));
-    return done({ task: submitted, value: submitted.state });
+    const now = stamp("agent");
+    const submission = { submitted: now, note: { text: note, overlay: [] } };
+    const submitted = await settle(place, { ...task, state: "reviewing", submissions: [...task.submissions, submission] }, now);
+    return done({ task: submitted.task, value: { state: submitted.task.state, issues: submitted.issues } });
   });
 }
 
@@ -522,51 +558,127 @@ function waitingProposal(task: _Task_Doctor_, id: _Id_Proposal_): Array<_PROPOSE
   return task.proposals.filter((each): each is _PROPOSED_Proposal__Task_ => each.id === id && each.state === "proposed");
 }
 
-export interface _Accepted_Task_ {
-  file: string;
-  document: _Document_Doctor_;
+// A decision holds only until its task ends, so while it's active, a
+// rejected proposal, or an accepted one, which hasn't applied yet, can be
+// reconsidered.
+function decidedProposal(task: _Task_Doctor_, id: _Id_Proposal_): Array<_ACCEPTED_Proposal__Task_ | _REJECTED_Proposal__Task_> {
+  if (!isActive(task)) return [];
+  return task.proposals.filter(
+    (each): each is _ACCEPTED_Proposal__Task_ | _REJECTED_Proposal__Task_ =>
+      each.id === id && (each.state === "rejected" || (each.state === "accepted" && each.change.length === 0)),
+  );
 }
 
-// Accepting checks the proposal still fits the document, then applies it as a
-// change from that proposal.
-export function accept(place: _Place_Tasks_, id: _Id_Task_, proposalId: _Id_Proposal_): Promise<_Outcome_Task_<_Accepted_Task_>> {
+// Reconsidering a decided proposal puts it back to wait for review, its
+// rounds as they were.
+export function reopen(place: _Place_Tasks_, id: _Id_Task_, proposalId: _Id_Proposal_): Promise<_Outcome_Task_<_Id_Proposal_>> {
+  return updateTask(place, id, async (task) => {
+    const [proposal] = decidedProposal(task, proposalId);
+    if (proposal === undefined || !isActive(task)) return refuse(`proposal ${proposalId} isn't one of the active task's decided proposals`);
+    const reopened: _PROPOSED_Proposal__Task_ = { state: "proposed", id: proposal.id, document: proposal.document, rounds: proposal.rounds };
+    return done({ task: { ...task, proposals: replace(task.proposals, reopened) }, value: proposal.id });
+  });
+}
+
+// Whether a proposal still fits its document as it is now: what it changes
+// unchanged since the version it was made from.
+async function misfits(place: _Place_Tasks_, proposal: _PROPOSED_Proposal__Task_ | _ACCEPTED_Proposal__Task_): Promise<Array<string>> {
+  const { version } = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
+  const [file] = place.fileOf(proposal.document);
+  if (file === undefined) return [`there's no document ${proposal.document} in the workspace`];
+  const base = await loadVersion(place.data, version.base);
+  const current = await readDocument(file);
+  if (base.kind === "rejected") return base.issues;
+  if (current.kind === "rejected") return current.issues;
+  return fitIssues(base.value, current.value, version.operations);
+}
+
+// An accepted proposal applied to its document as it is now, as a change
+// from that proposal, if it still fits.
+async function applyProposal(
+  place: _Place_Tasks_,
+  task: _Id_Task_,
+  proposal: _ACCEPTED_Proposal__Task_,
+): Promise<_Outcome_Task_<{ file: string; document: _Document_Doctor_; change: _Ref_Change_ }>> {
+  const [misfit, ...more] = await misfits(place, proposal);
+  if (misfit !== undefined) return { kind: "refused", issues: [misfit, ...more] };
+  const [file] = place.fileOf(proposal.document);
+  if (file === undefined) return refuse(`there's no document ${proposal.document} in the workspace`);
+  const { version } = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
+  const [first, ...rest] = realize(version.operations, mintNode);
+  if (first === undefined) return refuse("the proposal has no operations");
+  const applied = await makeChange({
+    file,
+    data: place.data,
+    author: "human",
+    source: { kind: "proposal", task, proposal: proposal.id },
+    operations: [first, ...rest],
+  });
+  if (applied.kind === "refused") return applied;
+  const [change] = applied.change;
+  if (change === undefined) return refuse("the proposal changes nothing in the document as it is now");
+  return done({ file, document: applied.document, change });
+}
+
+// who's told when completing a task changes a document, so what shows it
+// can show it as it is now
+let mergedListeners: Array<(file: string, document: _Document_Doctor_) => void> = [];
+
+export function whenMerged(listener: (file: string, document: _Document_Doctor_) => void): void {
+  mergedListeners = [listener];
+}
+
+// A task's accepted proposals not applied yet, applied in the order they
+// were accepted: one that no longer fits goes back to wait for review, with
+// why.
+async function merge(
+  place: _Place_Tasks_,
+  task: { id: _Id_Task_; proposals: Array<_Proposal_Task_>; applied: Array<_Ref_Change_> },
+): Promise<{ proposals: Array<_Proposal_Task_>; applied: Array<_Ref_Change_>; issues: Array<string> }> {
+  let { proposals, applied } = task;
+  const issues: Array<string> = [];
+  const pending = task.proposals
+    .filter((proposal): proposal is _ACCEPTED_Proposal__Task_ => proposal.state === "accepted" && proposal.change.length === 0)
+    .toSorted((first, second) => first.accepted.at.localeCompare(second.accepted.at));
+  for (const proposal of pending) {
+    const outcome = await applyProposal(place, task.id, proposal);
+    if (outcome.kind === "refused") {
+      issues.push(`proposal ${proposal.id} no longer fits, so it's back for review: ${outcome.issues.join("; ")}`);
+      proposals = replace(proposals, { state: "proposed", id: proposal.id, document: proposal.document, rounds: proposal.rounds });
+      continue;
+    }
+    proposals = replace(proposals, { ...proposal, change: [outcome.value.change] });
+    applied = [...applied, outcome.value.change];
+    for (const listener of mergedListeners) listener(outcome.value.file, outcome.value.document);
+  }
+  return { proposals, applied, issues };
+}
+
+// what's said once a decision's made: what kept the task from completing,
+// or completing from applying all it accepted
+export interface _Settled_Task_ {
+  issues: Array<string>;
+}
+
+// Accepting decides for a proposal, if it still fits the document: it
+// applies when the task completes, and until then the decision can be
+// changed.
+export function accept(place: _Place_Tasks_, id: _Id_Task_, proposalId: _Id_Proposal_): Promise<_Outcome_Task_<_Settled_Task_>> {
   return updateTask(place, id, async (task) => {
     const [proposal] = waitingProposal(task, proposalId);
     if (proposal === undefined || !isActive(task)) return refuse(`proposal ${proposalId} isn't waiting for review`);
-    const { version } = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
-    const [file] = place.fileOf(proposal.document);
-    if (file === undefined) return refuse(`there's no document ${proposal.document} in the workspace`);
-    const base = await loadVersion(place.data, version.base);
-    const current = await readDocument(file);
-    if (base.kind === "rejected") return { kind: "refused", issues: base.issues };
-    if (current.kind === "rejected") return { kind: "refused", issues: current.issues };
-    const [conflict, ...more] = fitIssues(base.value, current.value, version.operations);
-    if (conflict !== undefined) return { kind: "refused", issues: [conflict, ...more] };
-    const [first, ...rest] = realize(version.operations, mintNode);
-    if (first === undefined) return refuse("the proposal has no operations");
-    const applied = await makeChange({
-      file,
-      data: place.data,
-      author: "human",
-      source: { kind: "proposal", task: task.id, proposal: proposal.id },
-      operations: [first, ...rest],
-    });
-    if (applied.kind === "refused") return applied;
-    const [change] = applied.change;
-    if (change === undefined) return refuse("the proposal changes nothing in the document as it is now");
+    const [misfit, ...more] = await misfits(place, proposal);
+    if (misfit !== undefined) return { kind: "refused", issues: [misfit, ...more] };
     const accepted: _ACCEPTED_Proposal__Task_ = {
       state: "accepted",
       id: proposal.id,
       document: proposal.document,
       rounds: proposal.rounds,
       accepted: stamp("human"),
-      change,
+      change: [],
     };
-    const applies: Array<_Ref_Change_> = [...task.applied, change];
-    return done({
-      task: settled({ ...task, proposals: replace(task.proposals, accepted), applied: applies }, stamp("human")),
-      value: { file, document: applied.document },
-    });
+    const settledTask = await settle(place, { ...task, proposals: replace(task.proposals, accepted) }, stamp("human"));
+    return done({ task: settledTask.task, value: { issues: settledTask.issues } });
   });
 }
 
@@ -575,7 +687,7 @@ export function reject(
   id: _Id_Task_,
   proposalId: _Id_Proposal_,
   reason: _Text_Doctor_,
-): Promise<_Outcome_Task_<_Id_Proposal_>> {
+): Promise<_Outcome_Task_<_Settled_Task_>> {
   return updateTask(place, id, async (task) => {
     const [proposal] = waitingProposal(task, proposalId);
     if (proposal === undefined || !isActive(task)) return refuse(`proposal ${proposalId} isn't waiting for review`);
@@ -587,12 +699,14 @@ export function reject(
       rejected: stamp("human"),
       reason: reason.text === "" ? { kind: "unstated" } : { kind: "stated", text: reason },
     };
-    return done({ task: settled({ ...task, proposals: replace(task.proposals, rejected) }, stamp("human")), value: proposal.id });
+    const settledTask = await settle(place, { ...task, proposals: replace(task.proposals, rejected) }, stamp("human"));
+    return done({ task: settledTask.task, value: { issues: settledTask.issues } });
   });
 }
 
-// Asking for changes turns the proposal's standing round into a requested
-// one, and hands the task back to the agent if it was in review.
+// Asking for changes, on a proposal waiting for review or one decided and
+// reconsidered, turns its standing round into a requested one, and hands
+// the task back to the agent if it was in review.
 export function requestChanges(
   place: _Place_Tasks_,
   id: _Id_Task_,
@@ -600,8 +714,8 @@ export function requestChanges(
   feedback: _Text_Doctor_,
 ): Promise<_Outcome_Task_<_Id_Proposal_>> {
   return updateTask(place, id, async (task) => {
-    const [proposal] = waitingProposal(task, proposalId);
-    if (proposal === undefined || !isActive(task)) return refuse(`proposal ${proposalId} isn't waiting for review`);
+    const [proposal] = [...waitingProposal(task, proposalId), ...decidedProposal(task, proposalId)];
+    if (proposal === undefined || !isActive(task)) return refuse(`proposal ${proposalId} isn't waiting for review or decided`);
     const earlier = proposal.rounds.slice(0, -1).filter((round) => round.kind === "requested");
     const { version } = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
     const revising: _REVISING_Proposal__Task_ = {

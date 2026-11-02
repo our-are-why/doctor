@@ -6,18 +6,22 @@ import type {
   _Author_Doctor_,
   _Document_Doctor_,
   _Id_Document_,
+  _Holder_Text_,
   _Id_Task_,
+  _Proposal_Task_,
   _Reason_Task_,
+  _Ref_Change_,
   _Target_Request_,
   _Task_Doctor_,
 } from "../shared/domain.next.ts";
 import { latestBrief, nameOf } from "../shared/brief.ts";
 import { parse, parseOwn } from "../shared/parse.ts";
+import { taskIdSchema } from "../shared/schema.ts";
 import {
   endpointUrlSchema,
   focusDraftingSchema,
   tokenSchema,
-  type _Active_Status_,
+  type _Task_Status_,
   type _CHANGE_Message__Client_,
   type _FORGET_Message__Client_,
   type _Focus_Drafting_,
@@ -51,9 +55,12 @@ import {
   parkTask,
   readTask,
   reject,
+  reopen,
   requestChanges,
+  whenMerged,
   type _Place_Tasks_,
 } from "./tasks.ts";
+import { readEntries } from "./store.ts";
 
 type _Send_Session_ = (message: _Message_Server_) => void;
 
@@ -166,33 +173,134 @@ function draftingIn(tasks: Array<_Task_Doctor_>, file: string): Array<_View_Draf
 // The proposals of the active task waiting for review on a file; only the
 // active task has any. Each is headed by the requests it answers, or the
 // task's name when it names none.
-function openProposals(tasks: Array<_Task_Doctor_>, file: string): Array<_Open_Proposal_> {
+// Where an accepted proposal's change is in the document now: the texts it
+// rewrote or restyled and the nodes it added, edited or moved, as its
+// history entry has them, by their ids in the document.
+async function changedBy(data: string, change: _Ref_Change_): Promise<Array<_Holder_Text_>> {
+  const entries = await readEntries(data, change.document);
+  return entries.flatMap((entry) =>
+    entry.kind !== "change" || entry.id !== change.id
+      ? []
+      : entry.operations.flatMap((operation): Array<_Holder_Text_> => {
+          switch (operation.kind) {
+            case "write":
+            case "style":
+              return [operation.holder];
+            case "edit":
+            case "move":
+              return [{ kind: "node", node: operation.node }];
+            case "insert":
+              return [{ kind: "node", node: operation.subtree.id }];
+            case "delete":
+              return [];
+          }
+        }),
+  );
+}
+
+// What was last said of a proposal: what you asked to change, while it's
+// revised or once it's proposed again; or why you rejected it, if you said.
+function feedbackOf(proposal: _Proposal_Task_): string {
+  if (proposal.state === "rejected") return proposal.reason.kind === "stated" ? proposal.reason.text.text : "";
+  const asked = proposal.rounds.flatMap((round) => (round.kind === "requested" ? [round.request.feedback.text] : []));
+  return proposal.state === "accepted" ? "" : (asked.at(-1) ?? "");
+}
+
+// the active task's proposals on a file's documents, all but those withdrawn
+async function openProposals(tasks: Array<_Task_Doctor_>, file: string): Promise<Array<_Open_Proposal_>> {
   const documents = documentsIn(file);
-  return tasks.flatMap((task) => {
-    if (task.state !== "working" && task.state !== "reviewing") return [];
+  const [place] = tasksPlace();
+  const open: Array<_Open_Proposal_> = [];
+  for (const task of tasks) {
+    if (task.state !== "working" && task.state !== "reviewing") continue;
     const { requests } = latestBrief(task);
-    return task.proposals.flatMap((proposal): Array<_Open_Proposal_> => {
-      if (proposal.state !== "proposed" || !documents.includes(proposal.document)) return [];
+    for (const proposal of task.proposals) {
+      if (proposal.state === "withdrawn" || !documents.includes(proposal.document)) continue;
       const { version } = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
       const answered = requests.filter((request) => version.answers.includes(request.id)).map((request) => request.text.text);
-      const instruction = answered.length > 0 ? answered.join(" · ") : nameOf(task);
-      return [{ task: task.id, instruction, proposal: proposal.id, operations: version.operations }];
-    });
-  });
+      const applied = proposal.state === "accepted" ? proposal.change : [];
+      const changed: Array<_Holder_Text_> = [];
+      if (place !== undefined) for (const change of applied) changed.push(...(await changedBy(place.data, change)));
+      open.push({
+        task: task.id,
+        instruction: answered.length > 0 ? answered.join(" · ") : nameOf(task),
+        proposal: proposal.id,
+        operations: version.operations,
+        state: applied.length > 0 ? "applied" : proposal.state,
+        rounds: proposal.rounds.length,
+        feedback: feedbackOf(proposal),
+        changed,
+      });
+    }
+  }
+  return open;
 }
 
 const agentPrompt =
   "Work on doctor's tasks: run `doctor help` once, then run `doctor wait`, do the step it gives you, and run `doctor wait` again.";
 
-// the active task as an editor's bar shows it: whose turn it is, and where
-// the agent is
-function statusOf(tasks: Array<_Task_Doctor_>): Array<_Active_Status_> {
+// the finished task last acknowledged, kept with the workspace, so a bar
+// doesn't tell of it again
+let acknowledged: Array<_Id_Task_> = [];
+
+function acknowledge(task: _Id_Task_): void {
+  acknowledged = [task];
+  for (const memory of memories) void memory.update("doctor.acknowledged", task);
+  void tellStatus();
+}
+
+// where a request's aimed, as a task's card says it
+function describeAim(target: _Target_Request_): string {
+  const title = documentFiles.get(target.document)?.title ?? "a document";
+  switch (target.kind) {
+    case "document":
+      return `all of “${title}”`;
+    case "node":
+      return `a block of “${title}”`;
+    case "passage":
+      return `a passage of “${title}”`;
+  }
+}
+
+const finishedAt = (task: _Task_Doctor_): Array<{ at: string; by: _Author_Doctor_ }> =>
+  task.state === "completed" ? [task.completed] : task.state === "canceled" ? [task.canceled] : [];
+
+// The task the editors' bars tell of: the active one, whose turn it is and
+// where the agent is, or else the last one finished, until it's
+// acknowledged; with an overview of it for its card.
+function statusOf(tasks: Array<_Task_Doctor_>): Array<_Task_Status_> {
   const agents = agentsTurn(tasks).map((task) => task.id);
-  return tasks.flatMap((task): Array<_Active_Status_> =>
-    task.state === "working" || task.state === "reviewing"
-      ? [{ task: task.id, name: nameOf(task), state: task.state, turn: agents.includes(task.id) ? "agent" : "human", agent: presence() }]
-      : [],
-  );
+  const active = tasks.filter((task) => task.state === "working" || task.state === "reviewing");
+  const finished = tasks
+    .filter((task) => finishedAt(task).length > 0)
+    .toSorted((first, second) => (finishedAt(second)[0]?.at ?? "").localeCompare(finishedAt(first)[0]?.at ?? ""))
+    .slice(0, 1)
+    .filter((task) => !acknowledged.includes(task.id));
+  return (active.length > 0 ? active : finished).flatMap((task): Array<_Task_Status_> => {
+    if (task.state === "draft" || task.state === "parked") return [];
+    const count = (state: string) => task.proposals.filter((proposal) => proposal.state === state).length;
+    return [
+      {
+        task: task.id,
+        name: nameOf(task),
+        state: task.state,
+        turn: agents.includes(task.id) ? "agent" : "human",
+        agent: presence(),
+        requests: latestBrief(task).requests.map((request) => ({ text: request.text.text, targets: request.targets.map(describeAim) })),
+        proposals: {
+          proposed: count("proposed"),
+          revising: count("revising"),
+          accepted: count("accepted"),
+          rejected: count("rejected"),
+          withdrawn: count("withdrawn"),
+        },
+        started: task.activated.at,
+        finished: finishedAt(task).map((stamp) => ({ at: stamp.at, by: stamp.by })),
+        reason: task.state === "canceled" && task.reason.kind === "stated" ? task.reason.text.text : "",
+        note: task.submissions.findLast((submission) => submission.note.text !== "")?.note.text ?? "",
+      },
+    ];
+  });
 }
 
 // tells every view what changed in the tasks, and any agent waiting its turn
@@ -206,10 +314,11 @@ async function announce(problems: Array<string>, to: Array<_Send_Session_>): Pro
   const documents = listedDocuments();
   for (const send of watchers) send({ kind: "tasks", tasks, documents, drafting, problems: to.includes(send) ? problems : [] });
   for (const [file, sends] of viewers) {
+    const open = await openProposals(tasks, file);
     for (const send of sends) {
-      send({ kind: "proposals", file, open: openProposals(tasks, file), problems: to.includes(send) ? problems : [] });
+      send({ kind: "proposals", file, open, problems: to.includes(send) ? problems : [] });
       send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
-      send({ kind: "status", file, active: statusOf(tasks) });
+      send({ kind: "status", file, task: statusOf(tasks) });
     }
   }
   wake();
@@ -219,8 +328,8 @@ async function announce(problems: Array<string>, to: Array<_Send_Session_>): Pro
 async function tellStatus(): Promise<void> {
   const [place] = tasksPlace();
   if (place === undefined) return;
-  const active = statusOf(await listTasks(place));
-  for (const [file, sends] of viewers) for (const send of sends) send({ kind: "status", file, active });
+  const task = statusOf(await listTasks(place));
+  for (const [file, sends] of viewers) for (const send of sends) send({ kind: "status", file, task });
 }
 
 const serve: _Serve_Endpoint_ = async (caller, request) => {
@@ -326,7 +435,7 @@ async function finishTask(task: _Id_Task_, send: _Send_Session_): Promise<void> 
   const [place] = tasksPlace();
   if (place === undefined) return;
   const outcome = await completeTask(place, task);
-  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
+  return announce(outcome.kind === "refused" ? outcome.issues : outcome.value.issues, [send]);
 }
 
 async function dropTask(task: _Id_Task_, send: _Send_Session_): Promise<void> {
@@ -350,14 +459,14 @@ async function reviewProposal(message: _REVIEW_Message__Client_, send: _Send_Ses
   const { verdict } = message;
   if (verdict.kind === "accept") {
     const outcome = await accept(place, message.task, message.proposal);
-    if (outcome.kind === "refused") return announce(outcome.issues, [send]);
-    for (const viewer of viewers.get(outcome.value.file) ?? []) {
-      viewer({ kind: "updated", file: outcome.value.file, document: outcome.value.document });
-    }
-    return announce([], [send]);
+    return announce(outcome.kind === "refused" ? outcome.issues : outcome.value.issues, [send]);
   }
   if (verdict.kind === "reject") {
     const outcome = await reject(place, message.task, message.proposal, { text: verdict.reason, overlay: [] });
+    return announce(outcome.kind === "refused" ? outcome.issues : outcome.value.issues, [send]);
+  }
+  if (verdict.kind === "reopen") {
+    const outcome = await reopen(place, message.task, message.proposal);
     return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
   }
   const outcome = await requestChanges(place, message.task, message.proposal, { text: verdict.feedback, overlay: [] });
@@ -387,9 +496,9 @@ async function open(file: string, send: _Send_Session_): Promise<void> {
   const [place] = tasksPlace();
   if (place === undefined) return;
   const tasks = await listTasks(place);
-  send({ kind: "proposals", file, open: openProposals(tasks, file), problems: [] });
+  send({ kind: "proposals", file, open: await openProposals(tasks, file), problems: [] });
   send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
-  send({ kind: "status", file, active: statusOf(tasks) });
+  send({ kind: "status", file, task: statusOf(tasks) });
 }
 
 async function change(caller: _Author_Doctor_, message: _CHANGE_Message__Client_, send: _Send_Session_) {
@@ -489,6 +598,9 @@ const connect: _Connect_Endpoint_ = (caller, send) => {
         case "copyPrompt":
           if (caller === "human") void vscode.env.clipboard.writeText(agentPrompt);
           return;
+        case "acknowledge":
+          if (caller === "human") acknowledge(message.task);
+          return;
       }
     },
     close: () => {
@@ -538,8 +650,15 @@ function keptPorts(context: vscode.ExtensionContext): Array<number> {
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   memories = [context.workspaceState];
   whenPresenceChanges(() => void tellStatus());
+  // a task completing applies what it accepted, so its documents' editors
+  // show them as they are now
+  whenMerged((file, document) => {
+    for (const viewer of viewers.get(file) ?? []) viewer({ kind: "updated", file, document });
+  });
   const kept = parse(v.array(focusDraftingSchema), context.workspaceState.get("doctor.drafting"));
   drafting = kept.kind === "parsed" ? kept.value : [];
+  const seen = parse(taskIdSchema, context.workspaceState.get("doctor.acknowledged"));
+  acknowledged = seen.kind === "parsed" ? [seen.value] : [];
   const tokens = { human: mintToken(), agent: agentToken(context) };
   const running = await startEndpoint(tokens, connect, serve, keptPorts(context));
   context.subscriptions.push({ dispose: () => void running.close() });

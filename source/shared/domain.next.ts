@@ -441,6 +441,14 @@ interface __ACTIVATED_Task__Doctor_<
   proposals: Array<__Proposal__>;
   applied: Array<_Ref_Change_>;
   reviews: Array<_Review_Change_>;
+  submissions: Array<_Submission_Task_>;
+}
+
+// Each time the agent handed the task over, and what it said in doing so:
+// what it did, or why nothing needed changing; empty when it said nothing.
+export interface _Submission_Task_ {
+  submitted: _Stamp_Doctor_;
+  note: _Text_Doctor_;
 }
 
 export interface _DRAFT_Task__Doctor_ extends __BASE_Task__Doctor_<"draft"> {}
@@ -460,11 +468,13 @@ export interface _COMPLETED_Task__Doctor_
   completed: _Stamp_Doctor_;
 }
 
-// set aside, to be resumed: what it made is kept, and what was still
-// waiting for review was withdrawn when it was parked
-export interface _PARKED_Task__Doctor_
-  extends __ACTIVATED_Task__Doctor_<"parked", _FINAL_Proposal__Task_> {
+// set aside, to be resumed as it was: what it made is kept, what's waiting
+// for review too, and it goes back to being worked on or reviewed, as it
+// was when it was parked
+export interface _PARKED_Task__Doctor_<__Proposal__ extends _Proposal_Task_ = _Proposal_Task_>
+  extends __ACTIVATED_Task__Doctor_<"parked", __Proposal__> {
   parked: _Stamp_Doctor_;
+  was: _ACTIVE_Task__Doctor_["state"];
 }
 
 export interface _CANCELED_Task__Doctor_
@@ -567,7 +577,10 @@ export interface _REVISING_Proposal__Task_
 export interface _ACCEPTED_Proposal__Task_
   extends __BASE_Proposal__Task_<"accepted", _STANDING_Round__Proposal_> {
   accepted: _Stamp_Doctor_;
-  change: _Ref_Change_;
+  // the change it made once its task completed and applied it, none until
+  // then; one accepted before acceptance waited for its task's completion
+  // was applied at once, so its change is there already
+  change: Array<_Ref_Change_>;
 }
 
 export interface _REJECTED_Proposal__Task_
@@ -628,10 +641,10 @@ export type _PARK_Transition__Task_ = (
 export type _RESUME_Transition__Task_ = (
   task: _PARKED_Task__Doctor_,
   activated: _Stamp_Doctor_,
-) => _WORKING_Task__Doctor_;
+) => _ACTIVE_Task__Doctor_;
 
 export type _COMPLETE_Transition__Task_ = (
-  task: _ACTIVE_Task__Doctor_<_FINAL_Proposal__Task_> | _PARKED_Task__Doctor_,
+  task: _ACTIVE_Task__Doctor_<_FINAL_Proposal__Task_> | _PARKED_Task__Doctor_<_FINAL_Proposal__Task_>,
   completed: _Stamp_Doctor_,
 ) => _COMPLETED_Task__Doctor_;
 

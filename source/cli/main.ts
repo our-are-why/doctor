@@ -29,9 +29,11 @@ and comes back to you if any is sent back for changes.
                                "answers": [<request id>, ...], "operations": [...] }
                            where base is the version you read the document at, and
                            answers names the requests the proposal answers
-  doctor submit            hand the active task over for review, once you've proposed
+  doctor submit [--note <text>]
+                           hand the active task over for review, once you've proposed
                            everything it needs; with nothing left to review, it
-                           completes
+                           completes. The note, shown with the task, says what you
+                           did, or why nothing needed changing
 
 Everything is JSON. When doctor refuses something, it answers { "issues": [...] }
 and the command exits 1.
@@ -175,8 +177,15 @@ async function run(args: Array<string>): Promise<number> {
       const [payload] = await readInput(argument);
       return payload === undefined ? 1 : call("POST", "propose", payload);
     }
-    case "submit":
-      return call("POST", "submit", undefined);
+    case "submit": {
+      const [flag, note] = args.slice(1);
+      if (flag === undefined) return call("POST", "submit", undefined);
+      if (flag !== "--note" || note === undefined || note.trim() === "") {
+        console.log(JSON.stringify({ issues: ["doctor submit takes --note <text>, or nothing"] }));
+        return 1;
+      }
+      return call("POST", "submit", { note });
+    }
     case "help":
     case undefined:
       console.log(usage);

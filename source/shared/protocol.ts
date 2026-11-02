@@ -4,6 +4,7 @@ import type {
   _Author_Doctor_,
   _Document_Doctor_,
   _DRAFT_Id__Node_,
+  _Holder_Text_,
   _Id_Document_,
   _Id_Node_,
   _Id_Proposal_,
@@ -18,6 +19,7 @@ import {
   authorSchema,
   documentIdSchema,
   documentSchema,
+  holderSchema,
   nodeIdSchema,
   operationsSchema,
   proposalIdSchema,
@@ -59,7 +61,8 @@ export type _Message_Client_ =
   | _FOCUS_Message__Client_
   | _UNFOCUS_Message__Client_
   | _DISCARD_Message__Client_
-  | _COPY_PROMPT_Message__Client_;
+  | _COPY_PROMPT_Message__Client_
+  | _ACKNOWLEDGE_Message__Client_;
 
 interface __BASE_Message__Client_<__MessageKind__ extends string> {
   kind: __MessageKind__;
@@ -87,7 +90,11 @@ export interface _REVIEW_Message__Client_ extends __BASE_Message__Client_<"revie
   verdict: _Verdict_Review_;
 }
 
-export type _Verdict_Review_ = _ACCEPT_Verdict__Review_ | _REJECT_Verdict__Review_ | _REQUEST_Verdict__Review_;
+export type _Verdict_Review_ =
+  | _ACCEPT_Verdict__Review_
+  | _REJECT_Verdict__Review_
+  | _REQUEST_Verdict__Review_
+  | _REOPEN_Verdict__Review_;
 
 interface __BASE_Verdict__Review_<__VerdictKind__ extends string> {
   kind: __VerdictKind__;
@@ -102,6 +109,9 @@ export interface _REJECT_Verdict__Review_ extends __BASE_Verdict__Review_<"rejec
 export interface _REQUEST_Verdict__Review_ extends __BASE_Verdict__Review_<"request"> {
   feedback: string;
 }
+
+// a rejected proposal reconsidered, waiting for review again
+export interface _REOPEN_Verdict__Review_ extends __BASE_Verdict__Review_<"reopen"> {}
 
 // the tasks, kept current: what the dashboard shows
 export interface _WATCH_Message__Client_ extends __BASE_Message__Client_<"watch"> {}
@@ -141,6 +151,11 @@ export interface _DISCARD_Message__Client_ extends __BASE_Message__Client_<"disc
 // puts what to tell an agent about doctor on the clipboard
 export interface _COPY_PROMPT_Message__Client_ extends __BASE_Message__Client_<"copyPrompt"> {}
 
+// a finished task seen, no longer shown in the bars
+export interface _ACKNOWLEDGE_Message__Client_ extends __BASE_Message__Client_<"acknowledge"> {
+  task: _Id_Task_;
+}
+
 export interface _PARK_Message__Client_ extends __BASE_Message__Client_<"park"> {
   task: _Id_Task_;
 }
@@ -158,6 +173,7 @@ const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kin
   v.strictObject({ kind: v.literal("accept") }),
   v.strictObject({ kind: v.literal("reject"), reason: v.string() }),
   v.strictObject({ kind: v.literal("request"), feedback: v.pipe(v.string(), v.minLength(1)) }),
+  v.strictObject({ kind: v.literal("reopen") }),
 ]);
 
 const requestTextSchema = v.pipe(v.string(), v.trim(), v.minLength(1, "a request says what it asks for"));
@@ -178,6 +194,7 @@ export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v
   v.strictObject({ kind: v.literal("unfocus") }),
   v.strictObject({ kind: v.literal("discard"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("copyPrompt") }),
+  v.strictObject({ kind: v.literal("acknowledge"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("park"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("complete"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("cancel"), task: taskIdSchema }),
@@ -237,14 +254,25 @@ export interface _REFUSED_Message__Server_ extends __BASE_Message__Server_<"refu
 }
 
 // a proposal waiting for review, as a file's viewers show it
+// A proposal of the active task, as an editor shows it: waiting for your
+// review; sent back, being revised as you asked; or decided, accepted, to
+// apply when the task completes, or rejected, either open to reconsidering
+// until then; or applied already, accepted before acceptance waited for the
+// task's completion. With its operations as last proposed, how many rounds
+// it's had, and what was last said of it: what you asked to change, or why
+// you rejected it; and, once applied, where its change is in the document.
 export interface _Open_Proposal_ {
   task: _Id_Task_;
   instruction: string;
   proposal: _Id_Proposal_;
   operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
+  state: "proposed" | "revising" | "accepted" | "rejected" | "applied";
+  rounds: number;
+  feedback: string;
+  changed: Array<_Holder_Text_>;
 }
 
-// the proposals waiting for review on a file, sent whenever they change
+// the active task's proposals on a file, sent whenever they change
 export interface _PROPOSALS_Message__Server_ extends __BASE_Message__Server_<"proposals"> {
   file: string;
   open: Array<_Open_Proposal_>;
@@ -258,19 +286,47 @@ export interface _TASKS_Message__Server_ extends __BASE_Message__Server_<"tasks"
   problems: Array<string>;
 }
 
-// the active task, if any, as an editor's bar shows it: whose turn it is,
-// and whether an agent is waiting, working or away
+// The task an editor's bar tells of, if any: the active one, whose turn it
+// is and whether an agent is waiting, working or away, or else the last one
+// finished, until it's acknowledged; and an overview of it, for the card the
+// bar shows of it.
 export interface _STATUS_Message__Server_ extends __BASE_Message__Server_<"status"> {
   file: string;
-  active: Array<_Active_Status_>;
+  task: Array<_Task_Status_>;
 }
 
-export interface _Active_Status_ {
+export interface _Task_Status_ {
   task: _Id_Task_;
   name: string;
-  state: "working" | "reviewing";
+  state: "working" | "reviewing" | "completed" | "canceled";
   turn: "agent" | "human";
   agent: "waiting" | "working" | "away";
+  requests: Array<_Request_Status_>;
+  proposals: _Proposals_Status_;
+  // when it started, an ISO time, and when it finished, if it has, and by
+  // whom: the agent, handing it back with nothing to review, or you, once
+  // every proposal's decided or you canceled it
+  started: string;
+  finished: Array<{ at: string; by: "human" | "agent" }>;
+  // why it was canceled, when that was said
+  reason: string;
+  // what the agent last said on handing it over, if it said anything
+  note: string;
+}
+
+// a request's words, and where it's aimed, described
+export interface _Request_Status_ {
+  text: string;
+  targets: Array<string>;
+}
+
+// how many of the task's proposals are in each state
+export interface _Proposals_Status_ {
+  proposed: number;
+  revising: number;
+  accepted: number;
+  rejected: number;
+  withdrawn: number;
 }
 
 // what's being drafted, if anything: a task not made yet, before its first
@@ -327,6 +383,10 @@ const openProposalSchema: v.GenericSchema<unknown, _Open_Proposal_> = v.strictOb
   instruction: v.string(),
   proposal: proposalIdSchema,
   operations: proposalOperationsSchema,
+  state: v.picklist(["proposed", "revising", "accepted", "rejected", "applied"]),
+  rounds: v.number(),
+  feedback: v.string(),
+  changed: v.array(holderSchema),
 });
 
 export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v.variant("kind", [
@@ -346,13 +406,25 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
   v.strictObject({
     kind: v.literal("status"),
     file: v.string(),
-    active: v.array(
+    task: v.array(
       v.strictObject({
         task: taskIdSchema,
         name: v.string(),
-        state: v.picklist(["working", "reviewing"]),
+        state: v.picklist(["working", "reviewing", "completed", "canceled"]),
         turn: v.picklist(["agent", "human"]),
         agent: v.picklist(["waiting", "working", "away"]),
+        requests: v.array(v.strictObject({ text: v.string(), targets: v.array(v.string()) })),
+        proposals: v.strictObject({
+          proposed: v.number(),
+          revising: v.number(),
+          accepted: v.number(),
+          rejected: v.number(),
+          withdrawn: v.number(),
+        }),
+        started: v.string(),
+        finished: v.array(v.strictObject({ at: v.string(), by: v.picklist(["human", "agent"]) })),
+        reason: v.string(),
+        note: v.string(),
       }),
     ),
   }),
@@ -381,6 +453,9 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
   v.strictObject({ kind: v.literal("updated"), file: v.string(), document: documentSchema }),
   v.strictObject({ kind: v.literal("refused"), file: v.string(), issues: issuesSchema }),
 ]);
+
+// what the agent says on handing a task over, if anything
+export const submitPayloadSchema = v.union([v.null(), v.strictObject({ note: v.string() })]);
 
 // what the agent proposes: which document, the version of it it was shown,
 // and the operations that would change it

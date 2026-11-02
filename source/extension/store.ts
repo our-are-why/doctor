@@ -14,7 +14,7 @@ import type {
   _Version_Document_,
 } from "../shared/domain.next.ts";
 import { parse, parseOwn, type _Result_Parse_ } from "../shared/parse.ts";
-import { documentSchema, nodeHashSchema, storeObjectSchema, versionSchema } from "../shared/schema.ts";
+import { documentSchema, historyEntrySchema, nodeHashSchema, storeObjectSchema, versionSchema } from "../shared/schema.ts";
 import { childrenOf } from "../shared/tree.ts";
 
 interface _Objects_Version_ {
@@ -150,6 +150,22 @@ export async function loadVersion(data: string, version: _Version_Document_): Pr
   } catch (someError) {
     return { kind: "rejected", issues: [`couldn't load version ${version}: ${String(someError)}`] };
   }
+}
+
+// a document's history, each entry that reads as one; none if it has none
+export async function readEntries(data: string, document: _Id_Document_): Promise<Array<_Entry_History_>> {
+  const text = await readFile(join(data, "history", `${document}.jsonl`), "utf8").catch(() => "");
+  return text
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .flatMap((line) => {
+      try {
+        const entry = parse(historyEntrySchema, JSON.parse(line));
+        return entry.kind === "parsed" ? [entry.value] : [];
+      } catch {
+        return [];
+      }
+    });
 }
 
 export async function appendEntry(data: string, document: _Id_Document_, entry: _Entry_History_): Promise<void> {

@@ -46,6 +46,7 @@ import type {
   _Target_Link_,
   _Target_Request_,
   _Task_Doctor_,
+  _Submission_Task_,
   _Text_Doctor_,
   _Time_Doctor_,
   _Url_Target_,
@@ -265,7 +266,7 @@ export const documentSchema: v.GenericSchema<unknown, _Document_Doctor_> = v.pip
 
 // operations
 
-const holderSchema: v.GenericSchema<unknown, _Holder_Text_> = v.variant("kind", [
+export const holderSchema: v.GenericSchema<unknown, _Holder_Text_> = v.variant("kind", [
   v.strictObject({ kind: v.literal("title") }),
   v.strictObject({ kind: v.literal("node"), node: nodeIdSchema }),
 ]);
@@ -468,7 +469,9 @@ const accepted = v.strictObject({
   ...proposalBase,
   rounds: roundsSchema(standingSchema),
   accepted: stampSchema,
-  change: changeRefSchema,
+  // accepted before acceptance waited for its task's completion, a proposal
+  // was applied at once, and kept the change it made as one
+  change: v.union([v.array(changeRefSchema), v.pipe(changeRefSchema, v.transform((ref): Array<_Ref_Change_> => [ref]))]),
 });
 
 const rejected = v.strictObject({
@@ -512,10 +515,17 @@ const taskBase = {
   brief: v.strictObject({ versions: v.tupleWithRest([briefVersionSchema], briefVersionSchema) }),
 };
 
+const submissionSchema: v.GenericSchema<unknown, _Submission_Task_> = v.strictObject({
+  submitted: stampSchema,
+  note: textSchema,
+});
+
 const activated = {
   activated: stampSchema,
   applied: v.array(changeRefSchema),
   reviews: v.array(reviewSchema),
+  // tasks handed over before what was said in doing so was kept have none
+  submissions: v.optional(v.array(submissionSchema), (): Array<_Submission_Task_> => []),
 };
 
 export const taskSchema: v.GenericSchema<unknown, _Task_Doctor_> = v.variant("state", [
@@ -526,7 +536,10 @@ export const taskSchema: v.GenericSchema<unknown, _Task_Doctor_> = v.variant("st
     state: v.literal("parked"),
     ...taskBase,
     ...activated,
-    proposals: v.array(finalProposalSchema),
+    proposals: v.array(proposalSchema),
+    // tasks parked before they kept what was waiting for review had it
+    // withdrawn, and went back to being worked on
+    was: v.optional(v.picklist(["working", "reviewing"]), "working"),
     parked: stampSchema,
   }),
   v.strictObject({

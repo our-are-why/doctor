@@ -9,7 +9,7 @@ import type {
 } from "../shared/domain.next.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
 import type {
-  _Active_Status_,
+  _Task_Status_,
   _Open_Proposal_,
   _Token_Endpoint_,
   _Url_Endpoint_,
@@ -69,9 +69,10 @@ export interface _Session_Webview_ {
   addRequest: (targets: Array<_Target_Request_>, text: string) => void;
   start: (task: _Id_Task_) => void;
   stopDrafting: () => void;
-  // the active task, if any: whose turn it is, and where the agent is
-  active: Array<_Active_Status_>;
+  // the task the bar tells of, if any: the active one, or the last finished
+  status: Array<_Task_Status_>;
   copyPrompt: () => void;
+  acknowledge: (task: _Id_Task_) => void;
 }
 
 type _Due_Editor_ = "waiting" | "due";
@@ -94,7 +95,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const [arrivals, setArrivals] = useState(0);
   const [open, setOpen] = useState<Array<_Open_Proposal_>>([]);
   const [drafting, setDrafting] = useState<Array<_View_Drafting_>>([]);
-  const [active, setActive] = useState<Array<_Active_Status_>>([]);
+  const [status, setStatus] = useState<Array<_Task_Status_>>([]);
   const [openProblems, setOpenProblems] = useState<Array<string>>([]);
   const timer = useRef(0);
 
@@ -128,7 +129,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
       return;
     }
     if (message.kind === "status") {
-      setActive(message.active);
+      setStatus(message.task);
       return;
     }
     const current = loadRef.current;
@@ -197,6 +198,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const start = (task: _Id_Task_) => send({ kind: "activate", task });
   const stopDrafting = () => send({ kind: "unfocus" });
   const copyPrompt = () => send({ kind: "copyPrompt" });
+  const acknowledge = (task: _Id_Task_) => send({ kind: "acknowledge", task });
 
   return {
     load,
@@ -214,7 +216,8 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     addRequest,
     start,
     stopDrafting,
-    active,
+    status,
     copyPrompt,
+    acknowledge,
   };
 }

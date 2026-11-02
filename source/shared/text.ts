@@ -196,12 +196,13 @@ export function differences(before: string, after: string): Array<_Difference_Te
 
 // How a text changes, word by word, for a proposal to show it: in the old
 // text, what goes and what's replaced; in the new, what's added and what
-// replaces it; in both, what keeps its words but not its marks. Spaces at a
+// replaces it; in both, what keeps its words but not its marks, and what's
+// replaced by words marked differently. Spaces at a
 // change's ends are left out of it, and a change of spaces alone isn't
 // shown: what happens to them goes without saying. Offsets count code
 // points.
 export interface _Change_Text_ {
-  kind: "removed" | "replaced" | "inserted" | "restyled";
+  kind: "removed" | "replaced" | "replacedRestyled" | "inserted" | "restyled";
   from: number;
   to: number;
 }
@@ -225,11 +226,21 @@ const marksAt = (text: _Text_Doctor_): Array<string> => {
   return keys.map((each) => each.toSorted().join(" "));
 };
 
-// Words are diffed as characters standing for them, each distinct word its
-// own private-use character, so Myers' algorithm finds which words change.
-export function compareTexts(before: _Text_Doctor_, after: _Text_Doctor_): _Comparison_Text_ {
+// Where two lists of tokens, words or lines, differ: runs, each the stretch
+// of the first, [from, to), and of the second, [newFrom, newTo), that stand
+// in place of each other, one of them empty where tokens are only removed or
+// only added. The tokens are diffed as characters standing for them, each
+// distinct token its own private-use character, so Myers' algorithm finds
+// which change.
+export interface _Run_Difference_ {
+  from: number;
+  to: number;
+  newFrom: number;
+  newTo: number;
+}
+
+export function changedRuns(before: Array<string>, after: Array<string>): Array<_Run_Difference_> {
   const symbols = new Map<string, string>();
-  const tokens = (characters: string) => characters.match(tokenPattern) ?? [];
   const symbolOf = (token: string) => {
     const known = symbols.get(token);
     if (known !== undefined) return known;
@@ -237,6 +248,21 @@ export function compareTexts(before: _Text_Doctor_, after: _Text_Doctor_): _Comp
     symbols.set(token, made);
     return made;
   };
+  const runs: Array<_Run_Difference_> = [];
+  let inOld = 0;
+  let inNew = 0;
+  for (const change of differences(before.map(symbolOf).join(""), after.map(symbolOf).join(""))) {
+    const newFrom = inNew + change.start - inOld;
+    const newTo = newFrom + lengthOf(change.inserted);
+    runs.push({ from: change.start, to: change.end, newFrom, newTo });
+    inOld = change.end;
+    inNew = newTo;
+  }
+  return runs;
+}
+
+export function compareTexts(before: _Text_Doctor_, after: _Text_Doctor_): _Comparison_Text_ {
+  const tokens = (characters: string) => characters.match(tokenPattern) ?? [];
   const oldTokens = tokens(before.text);
   const newTokens = tokens(after.text);
   // where each token starts, in code points, and where the last ends
@@ -245,28 +271,29 @@ export function compareTexts(before: _Text_Doctor_, after: _Text_Doctor_): _Comp
   const newAt = starts(newTokens);
   const changes: _Comparison_Text_ = { before: [], after: [] };
   const kept: Array<[number, number, number]> = [];
+  const oldMarks = marksAt(before);
+  const newMarks = marksAt(after);
+  // the different sets of marks a stretch's characters carry
+  const marksIn = (marks: Array<string>, from: number, to: number) => [...new Set(marks.slice(from, to))].toSorted().join("|");
   let inOld = 0;
   let inNew = 0;
-  for (const change of differences(oldTokens.map(symbolOf).join(""), newTokens.map(symbolOf).join(""))) {
-    const added = lengthOf(change.inserted);
-    kept.push([inOld, change.start, inNew]);
-    const newStart = inNew + change.start - inOld;
-    const from = oldAt[change.start] ?? 0;
-    const to = oldAt[change.end] ?? from;
-    const newFrom = newAt[newStart] ?? 0;
-    const newTo = newAt[newStart + added] ?? newFrom;
+  for (const run of changedRuns(oldTokens, newTokens)) {
+    kept.push([inOld, run.from, inNew]);
+    const from = oldAt[run.from] ?? 0;
+    const to = oldAt[run.to] ?? from;
+    const newFrom = newAt[run.newFrom] ?? 0;
+    const newTo = newAt[run.newTo] ?? newFrom;
     if (to > from && newTo > newFrom) {
-      changes.before.push({ kind: "replaced", from, to });
-      changes.after.push({ kind: "replaced", from: newFrom, to: newTo });
+      const kind = marksIn(oldMarks, from, to) === marksIn(newMarks, newFrom, newTo) ? "replaced" : "replacedRestyled";
+      changes.before.push({ kind, from, to });
+      changes.after.push({ kind, from: newFrom, to: newTo });
     } else if (to > from) changes.before.push({ kind: "removed", from, to });
     else if (newTo > newFrom) changes.after.push({ kind: "inserted", from: newFrom, to: newTo });
-    inOld = change.end;
-    inNew = newStart + added;
+    inOld = run.to;
+    inNew = run.newTo;
   }
   kept.push([inOld, oldTokens.length, inNew]);
   // the words kept, character by character, where their marks differ
-  const oldMarks = marksAt(before);
-  const newMarks = marksAt(after);
   const restyled = (side: Array<_Change_Text_>, at: number) => {
     const last = side.at(-1);
     if (last !== undefined && last.kind === "restyled" && last.to === at) last.to = at + 1;
