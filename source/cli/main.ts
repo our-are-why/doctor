@@ -82,7 +82,9 @@ async function request(method: string, path: string, body: unknown): Promise<_An
   if (endpoint === undefined || token === undefined) {
     return unanswered(503, "DOCTOR_ENDPOINT isn't set: use a terminal VS Code opened after doctor started");
   }
-  const until = Date.now() + patience;
+  // counted from the first failure, since a wait can be open a long while
+  // before doctor goes away under it
+  let until: Array<number> = [];
   for (;;) {
     try {
       const response = await fetch(new URL(path, endpoint), {
@@ -93,8 +95,9 @@ async function request(method: string, path: string, body: unknown): Promise<_An
       if (response.status === 401) return unanswered(401, `doctor doesn't know this terminal's token: ${outOfDate}`);
       return { status: response.status, body: await response.json() };
     } catch (someError) {
+      until = until.length === 0 ? [Date.now() + patience] : until;
       const again = method === "GET" || refused(someError);
-      if (!again || Date.now() >= until) {
+      if (!again || until.some((each) => Date.now() >= each)) {
         return unanswered(503, `doctor isn't answering at ${endpoint}: ${outOfDate} (${String(someError)})`);
       }
       await new Promise((resolve) => setTimeout(resolve, apart));
