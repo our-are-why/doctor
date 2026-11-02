@@ -230,34 +230,48 @@
   border-color: var(--vscode-inputValidation-errorBorder);
 }
 
-/* the form that makes a task about the selection */
+/* the form that makes a task about the selection: whole lines of the
+   document, on a band like a code block's, its contents laid out freely and
+   centred within them; the field in the editor's font, set where it opens.
+   Its purple is the selection's while it's open, to tie the two together */
 
 .taskBox {
-  background: var(--vscode-editorWidget-background);
-  border: 1px solid var(--vscode-editorWidget-border, transparent);
-  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 6%, transparent);
+  box-shadow: inset 3px 0 0 var(--vscode-charts-purple, #b180d7);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  font-family: var(--vscode-font-family);
-  gap: 4px;
-  padding: 6px;
-  width: min(36em, 80vw);
+  gap: 8px;
+  justify-content: center;
+  overflow: hidden;
+  padding: 8px 12px;
 }
 
 .taskInput {
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
   box-sizing: border-box;
   color: var(--vscode-input-foreground);
+  display: block;
+  flex: none;
   font: inherit;
+  line-height: inherit;
+  margin: 0;
   outline: none;
-  padding: 4px 6px;
-  resize: vertical;
+  overflow: hidden;
+  padding: 4px 8px;
+  resize: none;
   width: 100%;
 }
 
 .taskInput:focus {
-  border-color: var(--vscode-focusBorder);
+  border-color: var(--vscode-charts-purple, #b180d7);
+}
+
+/* while the form's open, what it's about, in the form's colour */
+:global(.monaco-editor) .targeted {
+  background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 35%, transparent);
 }
 
 .taskInvalid .taskInput {
@@ -267,13 +281,22 @@
 .taskRow {
   align-items: center;
   display: flex;
-  gap: 0.4rem;
+  flex: none;
+  font-family: var(--vscode-font-family);
+  font-size: 0.85em;
+  gap: 0.5rem;
 }
 
 .taskHint {
   color: var(--vscode-descriptionForeground);
   flex: 1;
-  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskRow button {
+  padding: 0.2rem 0.75rem;
 }
 
 /* proposals: what they'd take away struck through, what they'd add beneath,

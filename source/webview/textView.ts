@@ -1056,14 +1056,14 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     pointer = box === undefined ? [] : [event.event.browserEvent.clientY - box.top];
   });
 
-  // A new task's form, beside the selection: above it when the pointer's
-  // nearer its top, below it otherwise. What's typed stays if it's closed
+  // A new task's form, on lines of its own: below the selection, or above it
+  // when the pointer's nearer its top. What's typed stays if it's closed
   // without making the task.
   const taskBox = document.createElement("div");
   taskBox.className = styles.taskBox;
   const taskInput = document.createElement("textarea");
   taskInput.className = styles.taskInput;
-  taskInput.rows = 2;
+  taskInput.rows = 1;
   const taskHint = document.createElement("span");
   taskHint.className = styles.taskHint;
   const makeButton = document.createElement("button");
@@ -1124,32 +1124,115 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     markRequests();
   };
   taskBox.append(taskInput, taskRow);
-  let tasking: Array<{ targets: Array<_Target_Request_>; at: monaco.IPosition; above: "above" | "below"; route: _Route_Form_ }> = [];
-  const { ABOVE, BELOW } = monaco.editor.ContentWidgetPositionPreference;
-  const taskWidget: monaco.editor.IContentWidget = {
-    getId: () => "doctor.task",
-    getDomNode: () => taskBox,
-    getPosition: () => {
-      const [place] = tasking;
-      return place === undefined ? null : { position: place.at, preference: place.above === "above" ? [ABOVE, BELOW] : [BELOW, ABOVE] };
-    },
+
+  // The form takes whole lines of the document, from the text's left edge to
+  // the editor's right and not the gutters: an empty zone makes the room,
+  // and the form sits level with it in an overlay, as a proposal's header
+  // does. It's four lines at least, more when what's in it needs them, and
+  // laid out freely inside. Above the selection, the view scrolls with it,
+  // so the selection stays where it was.
+  let tasking: Array<{
+    targets: Array<_Target_Request_>;
+    route: _Route_Form_;
+    zone: monaco.editor.IViewZone;
+    id: string;
+    above: "above" | "below";
+    shift: number;
+    selections: Array<monaco.Selection>;
+  }> = [];
+  const taskOverlay: monaco.editor.IOverlayWidget = { getId: () => "doctor.task", getDomNode: () => taskBox, getPosition: () => null };
+  const lineHeight = () => editor.getOption(monaco.editor.EditorOption.lineHeight);
+  // What the form is about, coloured as the form is while it's open: the
+  // whole line where all its words are selected, blank lines among them
+  // too, and just the words selected where only some are. A line the
+  // selection only reaches the start of isn't taken.
+  const targeted = editor.createDecorationsCollection();
+  const targetedMarks = (selections: Array<monaco.Selection>): Array<monaco.editor.IModelDeltaDecoration> =>
+    selections
+      .filter((each) => !each.isEmpty())
+      .flatMap((selection) => {
+        const marks: Array<monaco.editor.IModelDeltaDecoration> = [];
+        for (let line = selection.startLineNumber; line <= lastLineOf(selection); line += 1) {
+          const end = model.getLineMaxColumn(line);
+          const from = line === selection.startLineNumber ? selection.startColumn : 1;
+          const to = line === selection.endLineNumber ? selection.endColumn : end;
+          const whole = from <= contentStart(model.getLineContent(line)) + 1 && to >= end;
+          marks.push(
+            whole
+              ? { range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className: styles.targeted } }
+              : { range: new monaco.Range(line, from, line, to), options: { className: styles.targeted } },
+          );
+        }
+        return marks;
+      });
+  const fewestLines = 4;
+  // the field grown to what's written, and the lines the form needs for it
+  const formLines = () => {
+    taskInput.style.height = "auto";
+    taskInput.style.height = `${taskInput.scrollHeight + taskInput.offsetHeight - taskInput.clientHeight}px`;
+    taskBox.style.height = "auto";
+    const lines = Math.max(fewestLines, Math.ceil(taskBox.scrollHeight / lineHeight()));
+    taskBox.style.height = `${lines * lineHeight()}px`;
+    return lines;
   };
-  const closeTask = () => {
-    if (tasking.length === 0) return;
+  // While the form's open, the selection is hidden, so only the form's
+  // colour shows over what it's about. Closing gives it back, unless another
+  // form replaces this one, and goes back to the editor unless the focus
+  // went elsewhere.
+  const closeTask = (how: "back" | "away" | "replaced") => {
+    const [place] = tasking;
+    if (place === undefined) return;
     tasking = [];
-    editor.removeContentWidget(taskWidget);
-    editor.focus();
+    targeted.clear();
+    editor.changeViewZones((accessor) => accessor.removeZone(place.id));
+    editor.removeOverlayWidget(taskOverlay);
+    if (place.shift > 0) editor.setScrollTop(editor.getScrollTop() - place.shift);
+    if (how === "back") editor.focus();
+    if (how !== "replaced" && place.selections.length > 0) editor.setSelections(place.selections);
   };
+  const fitTask = () => {
+    const [place] = tasking;
+    if (place === undefined) return;
+    const before = place.zone.heightInLines ?? 0;
+    const lines = formLines();
+    if (lines === before) return;
+    place.zone.heightInLines = lines;
+    editor.changeViewZones((accessor) => accessor.layoutZone(place.id));
+    if (place.above === "below") return;
+    const more = (lines - before) * lineHeight();
+    place.shift += more;
+    editor.setScrollTop(editor.getScrollTop() + more);
+  };
+  editor.onDidLayoutChange(() => {
+    if (tasking.length > 0) placeHeader(taskBox);
+  });
   // A quick task is this one request, started at once; drafting adds it to
   // the task being drafted. With nothing selected, the request is for the
   // document, made in its bar.
   const openTask = (route: _Route_Form_) => {
     const selection = editor.getSelection();
+    const selections = editor.getSelections() ?? [];
     const targets = targetsOfSelection();
     if (selection === null || targets.length === 0) {
       hooks.requestDocument();
       return;
     }
+    closeTask("replaced");
+    makeButton.textContent = route === "quick" ? "Start task" : "Add to draft";
+    taskHint.textContent = route === "quick" ? "quick task, started now" : "added to the task you're drafting";
+    targeted.set(targetedMarks(selections));
+    const { startLineNumber, startColumn } = selection;
+    editor.setSelection(new monaco.Selection(startLineNumber, startColumn, startLineNumber, startColumn));
+    taskInput.placeholder = "What should change here?";
+    taskBox.classList.remove(styles.taskInvalid);
+    const font = editor.getOption(monaco.editor.EditorOption.fontInfo);
+    taskBox.style.fontFamily = font.fontFamily;
+    taskBox.style.fontSize = `${font.fontSize}px`;
+    taskBox.style.lineHeight = `${font.lineHeight}px`;
+    placeHeader(taskBox);
+    taskBox.style.top = "-1000px";
+    editor.addOverlayWidget(taskOverlay);
+    const lines = formLines();
     const first = selection.startLineNumber;
     const last = lastLineOf(selection);
     const top = editor.getScrolledVisiblePosition({ lineNumber: first, column: 1 });
@@ -1157,18 +1240,28 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     const [y] = pointer;
     const nearerTop =
       y !== undefined && top !== null && bottom !== null && Math.abs(y - top.top) < Math.abs(y - (bottom.top + bottom.height));
-    tasking = [{ targets, at: { lineNumber: nearerTop ? first : last, column: 1 }, above: nearerTop ? "above" : "below", route }];
-    const [only] = targets;
-    const what =
-      targets.length > 1 ? `the ${targets.length} selected places` : only?.kind === "passage" ? "the selected words" : "the selected block";
-    makeButton.textContent = route === "quick" ? "Start task" : "Add to draft";
-    taskHint.textContent =
-      route === "quick"
-        ? `for ${what} · a quick task: this one request, started now`
-        : `for ${what} · adds a request to the task you're drafting`;
-    taskInput.placeholder = "What should change here?";
-    taskBox.classList.remove(styles.taskInvalid);
-    editor.addContentWidget(taskWidget);
+    // above only with room for it there on screen
+    const above = nearerTop && top !== null && top.top >= lines * lineHeight() ? "above" : "below";
+    const zone: monaco.editor.IViewZone = {
+      afterLineNumber: above === "above" ? first - 1 : last,
+      heightInLines: lines,
+      domNode: window.document.createElement("div"),
+      onDomNodeTop: (at) => {
+        taskBox.style.top = `${at}px`;
+      },
+      onComputedHeight: (height) => {
+        taskBox.style.height = `${height}px`;
+      },
+    };
+    const ids: Array<string> = [];
+    editor.changeViewZones((accessor) => {
+      ids.push(accessor.addZone(zone));
+    });
+    const [id] = ids;
+    if (id === undefined) return;
+    const shift = above === "above" ? lines * lineHeight() : 0;
+    if (shift > 0) editor.setScrollTop(editor.getScrollTop() + shift);
+    tasking = [{ targets, route, zone, id, above, shift, selections }];
     whenDrawn(() => taskInput.focus());
   };
   const submitTask = () => {
@@ -1183,21 +1276,24 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     if (place.route === "draft") hooks.addRequest(place.targets, written);
     else hooks.makeTask(place.targets, written);
     taskInput.value = "";
-    closeTask();
+    closeTask("back");
   };
   taskInput.addEventListener("keydown", (event) => {
     event.stopPropagation();
-    if (event.key === "Escape") closeTask();
+    if (event.key === "Escape") closeTask("back");
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     submitTask();
   });
-  taskInput.addEventListener("input", () => taskBox.classList.remove(styles.taskInvalid));
+  taskInput.addEventListener("input", () => {
+    taskBox.classList.remove(styles.taskInvalid);
+    fitTask();
+  });
   makeButton.addEventListener("click", submitTask);
-  cancelButton.addEventListener("click", closeTask);
+  cancelButton.addEventListener("click", () => closeTask("back"));
   // closed when the focus leaves it, not when it moves to one of its buttons
   taskBox.addEventListener("focusout", (event) => {
-    if (!(event.relatedTarget instanceof Node && taskBox.contains(event.relatedTarget))) closeTask();
+    if (!(event.relatedTarget instanceof Node && taskBox.contains(event.relatedTarget))) closeTask("away");
   });
   // What the right-click offers depends on whether a task is being drafted,
   // and on whether anything's selected: with a selection, requests about
