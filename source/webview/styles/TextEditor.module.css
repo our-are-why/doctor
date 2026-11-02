@@ -6,15 +6,19 @@
 
 /* the bar above the editor, for a request about the whole document */
 
+/* set apart from the document by the space below it, not a line; one
+   height at rest and taken over, so the document never moves */
 .requestBar,
 .draftingBar {
   align-items: center;
-  border-bottom: 1px solid var(--vscode-widget-border, transparent);
+  box-sizing: border-box;
   display: flex;
+  flex: none;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   gap: 0.4rem;
-  padding: 4px 8px;
+  height: 46px;
+  padding: 6px 8px 14px;
 }
 
 /* while a draft's being made, the bar says so */
@@ -22,13 +26,14 @@
   box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
 }
 
-.barLabel {
+/* the bar at rest: what's being drafted, if anything, taking the room on the
+   left, so the actions sit on the right */
+.barStatus {
   color: var(--vscode-descriptionForeground);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.barLabel:empty {
-  display: none;
 }
 
 .barButton,
@@ -51,19 +56,10 @@
   color: var(--vscode-button-foreground);
 }
 
-.requestInput {
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, transparent);
-  color: var(--vscode-input-foreground);
-  flex: 1;
-  font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
-  outline: none;
-  padding: 3px 6px;
-}
-
-.requestInput:focus {
-  border-color: var(--vscode-focusBorder);
+/* where the request form docks, under the bar, when it's about the whole
+   document; empty and taking no room otherwise */
+.dock {
+  flex: none;
 }
 
 .host {

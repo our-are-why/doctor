@@ -39,8 +39,6 @@ export interface _Hooks_View_ {
   beginDrafting: () => void;
   addRequest: (targets: Array<_Target_Request_>, text: string) => void;
   stopDrafting: () => void;
-  // a request for the whole document, made in the editor's bar
-  requestDocument: () => void;
   review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
 }
 
@@ -51,11 +49,13 @@ export interface _View_Text_ {
   mark: (issues: Array<string>) => void;
   proposals: (open: Array<_Open_Proposal_>) => void;
   focus: (drafting: Array<_View_Drafting_>) => void;
+  // the form for a request about the whole document, docked under the bar
+  requestForDocument: (route: _Route_Form_) => void;
   dispose: () => void;
 }
 
-// what the selection's form does with what's written in it
-type _Route_Form_ = "quick" | "draft";
+// what the request form does with what's written in it
+export type _Route_Form_ = "quick" | "draft";
 
 // positions in a line's content: the document counts code points, Monaco
 // counts UTF-16 units
@@ -228,7 +228,24 @@ const fenceLanguages: Array<[string, string]> = [
 const segmentClass = (segment: _Segment_Text_) =>
   [...segment.contrast.map((contrast) => styles[contrast]), ...(segment.links.length > 0 ? [styles.link] : [])].join(" ");
 
-export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Text_ {
+// Where the request form is: inline among the lines of the selection it's
+// about, or docked under the editor's bar when it's about the whole document.
+type _Placement_Form_ = _INLINE_Placement__Form_ | _DOCKED_Placement__Form_;
+
+interface __BASE_Placement__Form_<__PlacementKind__ extends string> {
+  kind: __PlacementKind__;
+}
+
+interface _INLINE_Placement__Form_ extends __BASE_Placement__Form_<"inline"> {
+  zone: monaco.editor.IViewZone;
+  id: string;
+  above: "above" | "below";
+  shift: number;
+}
+
+interface _DOCKED_Placement__Form_ extends __BASE_Placement__Form_<"docked"> {}
+
+export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hooks_View_): _View_Text_ {
   registerLanguages();
   applyTheme();
   const observer = new MutationObserver(applyTheme);
@@ -875,7 +892,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     linkBox.classList.remove(styles.linkInvalid);
     editor.addContentWidget(linkWidget);
     whenDrawn(() => {
-      linkInput.focus();
+      linkInput.focus({ preventScroll: true });
       linkInput.select();
     });
   };
@@ -1134,10 +1151,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   let tasking: Array<{
     targets: Array<_Target_Request_>;
     route: _Route_Form_;
-    zone: monaco.editor.IViewZone;
-    id: string;
-    above: "above" | "below";
-    shift: number;
+    placement: _Placement_Form_;
     selections: Array<monaco.Selection>;
   }> = [];
   const taskOverlay: monaco.editor.IOverlayWidget = { getId: () => "doctor.task", getDomNode: () => taskBox, getPosition: () => null };
@@ -1166,10 +1180,13 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
         return marks;
       });
   const fewestLines = 4;
-  // the field grown to what's written, and the lines the form needs for it
-  const formLines = () => {
+  // the field grown to what's written, and, inline, the lines the form needs
+  const growField = () => {
     taskInput.style.height = "auto";
     taskInput.style.height = `${taskInput.scrollHeight + taskInput.offsetHeight - taskInput.clientHeight}px`;
+  };
+  const formLines = () => {
+    growField();
     taskBox.style.height = "auto";
     const lines = Math.max(fewestLines, Math.ceil(taskBox.scrollHeight / lineHeight()));
     taskBox.style.height = `${lines * lineHeight()}px`;
@@ -1183,67 +1200,144 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     const [place] = tasking;
     if (place === undefined) return;
     tasking = [];
+    // the page itself never scrolls; if anything ever did scroll it, this
+    // puts it back, the bar above the editor in view
+    window.scrollTo(0, 0);
     targeted.clear();
-    editor.changeViewZones((accessor) => accessor.removeZone(place.id));
-    editor.removeOverlayWidget(taskOverlay);
-    if (place.shift > 0) editor.setScrollTop(editor.getScrollTop() - place.shift);
+    const { placement } = place;
+    if (placement.kind === "docked") taskBox.remove();
+    else {
+      editor.changeViewZones((accessor) => accessor.removeZone(placement.id));
+      editor.removeOverlayWidget(taskOverlay);
+      if (placement.shift > 0) editor.setScrollTop(editor.getScrollTop() - placement.shift);
+    }
     if (how === "back") editor.focus();
     if (how !== "replaced" && place.selections.length > 0) editor.setSelections(place.selections);
+  };
+  // Monaco scrolls to show all of a form opened or grown below the
+  // selection, so focusing its field never scrolls the page instead
+  const showTask = (after: number, lines: number) => {
+    const bottom = editor.getTopForLineNumber(after) + lineHeight() + lines * lineHeight();
+    const height = editor.getLayoutInfo().height;
+    if (bottom > editor.getScrollTop() + height) editor.setScrollTop(bottom - height);
   };
   const fitTask = () => {
     const [place] = tasking;
     if (place === undefined) return;
-    const before = place.zone.heightInLines ?? 0;
-    const lines = formLines();
-    if (lines === before) return;
-    place.zone.heightInLines = lines;
-    editor.changeViewZones((accessor) => accessor.layoutZone(place.id));
-    if (place.above === "below") return;
-    const more = (lines - before) * lineHeight();
-    place.shift += more;
-    editor.setScrollTop(editor.getScrollTop() + more);
-  };
-  editor.onDidLayoutChange(() => {
-    if (tasking.length > 0) placeHeader(taskBox);
-  });
-  // A quick task is this one request, started at once; drafting adds it to
-  // the task being drafted. With nothing selected, the request is for the
-  // document, made in its bar.
-  const openTask = (route: _Route_Form_) => {
-    const selection = editor.getSelection();
-    const selections = editor.getSelections() ?? [];
-    const targets = targetsOfSelection();
-    if (selection === null || targets.length === 0) {
-      hooks.requestDocument();
+    const { placement } = place;
+    if (placement.kind === "docked") {
+      growField();
       return;
     }
+    const before = placement.zone.heightInLines ?? 0;
+    const lines = formLines();
+    if (lines === before) return;
+    placement.zone.heightInLines = lines;
+    editor.changeViewZones((accessor) => accessor.layoutZone(placement.id));
+    if (placement.above === "below") {
+      showTask(placement.zone.afterLineNumber, lines);
+      return;
+    }
+    const more = (lines - before) * lineHeight();
+    placement.shift += more;
+    editor.setScrollTop(editor.getScrollTop() + more);
+  };
+  // Docked, the form spans the editor's whole width, gutters and all, its
+  // contents between the text's left edge and the right gutter's, as the
+  // document's lines are. Its purple line runs down the line numbers' left
+  // edge, and its band starts there, with nothing left of it.
+  const docked = ["padding-left", "padding-right", "box-shadow", "background-color", "background-image"];
+  // the digits' left edge, measured on the widest number drawn, else worked
+  // out from Monaco's layout, where they sit right-aligned in their column
+  const digitsLeft = (): number => {
+    const info = editor.getLayoutInfo();
+    const font = editor.getOption(monaco.editor.EditorOption.fontInfo);
+    const digits = String(model.getLineCount()).length;
+    const estimate = info.lineNumbersLeft + info.lineNumbersWidth - digits * font.maxDigitWidth;
+    let widest: Array<Element> = [];
+    for (const number of host.querySelectorAll(".line-numbers")) {
+      const [best] = widest;
+      if (best === undefined || (number.textContent ?? "").trim().length > (best.textContent ?? "").trim().length) widest = [number];
+    }
+    const [number] = widest;
+    if (number === undefined) return estimate;
+    const range = window.document.createRange();
+    range.selectNodeContents(number);
+    const box = range.getBoundingClientRect();
+    return box.width === 0 ? estimate : box.left - dock.getBoundingClientRect().left;
+  };
+  const placeDocked = () => {
+    const info = editor.getLayoutInfo();
+    const left = digitsLeft();
+    const purple = "var(--vscode-charts-purple, #b180d7)";
+    const band = "color-mix(in srgb, var(--vscode-editor-foreground) 6%, transparent)";
+    taskBox.style.paddingLeft = `${info.contentLeft}px`;
+    taskBox.style.paddingRight = `${info.verticalScrollbarWidth + info.minimap.minimapWidth}px`;
+    taskBox.style.boxShadow = "none";
+    taskBox.style.backgroundColor = "transparent";
+    taskBox.style.backgroundImage = `linear-gradient(to right, transparent ${left}px, ${purple} ${left}px ${left + 3}px, ${band} ${left + 3}px)`;
+  };
+  editor.onDidLayoutChange(() => {
+    const [place] = tasking;
+    if (place?.placement.kind === "inline") placeHeader(taskBox);
+    if (place?.placement.kind === "docked") placeDocked();
+  });
+  // One form for a request about a selection and about the whole document.
+  // A quick task is this one request, started at once; drafting adds it to
+  // the task being drafted. For a selection, the form is among its lines,
+  // and what it's about is coloured; for the document, or when nothing's
+  // selected, it's docked under the bar, across the whole width.
+  const openTask = (route: _Route_Form_, about: "selection" | "document") => {
+    const [document] = documents;
+    if (document === undefined) return;
+    const selection = editor.getSelection();
+    const selections = editor.getSelections() ?? [];
+    const chosen = about === "selection" ? targetsOfSelection() : [];
+    const [picked] = selection === null || chosen.length === 0 ? [] : [selection];
+    const targets: Array<_Target_Request_> = picked === undefined ? [{ kind: "document", document: document.id }] : chosen;
     closeTask("replaced");
     makeButton.textContent = route === "quick" ? "Start task" : "Add to draft";
     taskHint.textContent = route === "quick" ? "quick task, started now" : "added to the task you're drafting";
-    targeted.set(targetedMarks(selections));
-    const { startLineNumber, startColumn } = selection;
-    editor.setSelection(new monaco.Selection(startLineNumber, startColumn, startLineNumber, startColumn));
-    taskInput.placeholder = "What should change here?";
+    taskInput.placeholder = picked === undefined ? "What should change in this document?" : "What should change here?";
     taskBox.classList.remove(styles.taskInvalid);
+    if (picked !== undefined) {
+      targeted.set(targetedMarks(selections));
+      editor.setSelection(new monaco.Selection(picked.startLineNumber, picked.startColumn, picked.startLineNumber, picked.startColumn));
+    }
     const font = editor.getOption(monaco.editor.EditorOption.fontInfo);
     taskBox.style.fontFamily = font.fontFamily;
     taskBox.style.fontSize = `${font.fontSize}px`;
     taskBox.style.lineHeight = `${font.lineHeight}px`;
+    if (picked === undefined) {
+      // docked, it takes its own height, so the inline layout's is cleared
+      for (const property of ["position", "top", "left", "width", "height"]) taskBox.style.removeProperty(property);
+      placeDocked();
+      dock.append(taskBox);
+      growField();
+      tasking = [{ targets, route, placement: { kind: "docked" }, selections }];
+      whenDrawn(() => taskInput.focus({ preventScroll: true }));
+      return;
+    }
+    for (const property of docked) taskBox.style.removeProperty(property);
     placeHeader(taskBox);
     taskBox.style.top = "-1000px";
     editor.addOverlayWidget(taskOverlay);
     const lines = formLines();
-    const first = selection.startLineNumber;
-    const last = lastLineOf(selection);
-    const top = editor.getScrolledVisiblePosition({ lineNumber: first, column: 1 });
-    const bottom = editor.getScrolledVisiblePosition({ lineNumber: last, column: 1 });
-    const [y] = pointer;
-    const nearerTop =
-      y !== undefined && top !== null && bottom !== null && Math.abs(y - top.top) < Math.abs(y - (bottom.top + bottom.height));
-    // above only with room for it there on screen
-    const above = nearerTop && top !== null && top.top >= lines * lineHeight() ? "above" : "below";
+    // beside the selection: above it when the pointer's nearer its top and
+    // there's room on screen, below it otherwise; at the top for the document
+    const place = (): { after: number; above: "above" | "below" } => {
+      const first = picked.startLineNumber;
+      const last = lastLineOf(picked);
+      const top = editor.getScrolledVisiblePosition({ lineNumber: first, column: 1 });
+      const bottom = editor.getScrolledVisiblePosition({ lineNumber: last, column: 1 });
+      const [y] = pointer;
+      const nearerTop =
+        y !== undefined && top !== null && bottom !== null && Math.abs(y - top.top) < Math.abs(y - (bottom.top + bottom.height));
+      return nearerTop && top !== null && top.top >= lines * lineHeight() ? { after: first - 1, above: "above" } : { after: last, above: "below" };
+    };
+    const { after, above } = place();
     const zone: monaco.editor.IViewZone = {
-      afterLineNumber: above === "above" ? first - 1 : last,
+      afterLineNumber: after,
       heightInLines: lines,
       domNode: window.document.createElement("div"),
       onDomNodeTop: (at) => {
@@ -1261,8 +1355,9 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     if (id === undefined) return;
     const shift = above === "above" ? lines * lineHeight() : 0;
     if (shift > 0) editor.setScrollTop(editor.getScrollTop() + shift);
-    tasking = [{ targets, route, zone, id, above, shift, selections }];
-    whenDrawn(() => taskInput.focus());
+    else showTask(after, lines);
+    tasking = [{ targets, route, placement: { kind: "inline", zone, id, above, shift }, selections }];
+    whenDrawn(() => taskInput.focus({ preventScroll: true }));
   };
   const submitTask = () => {
     const [place] = tasking;
@@ -1301,21 +1396,21 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
   const offer = (id: string, label: string, when: string, run: () => void) =>
     editor.addAction({ id, label, contextMenuGroupId: "0_doctor", precondition: when, run });
   const selected = "editorHasSelection";
-  offer("doctor.quickTask", "doctor: quick task", `!doctorDrafting && ${selected}`, () => openTask("quick"));
+  offer("doctor.quickTask", "doctor: quick task", `!doctorDrafting && ${selected}`, () => openTask("quick", "selection"));
   offer("doctor.draft", "doctor: draft a task", `!doctorDrafting && ${selected}`, () => {
     hooks.beginDrafting();
-    openTask("draft");
+    openTask("draft", "selection");
   });
   offer("doctor.quickTaskDocument", "doctor: quick task for this document", `!doctorDrafting && !${selected}`, () =>
-    hooks.requestDocument(),
+    openTask("quick", "document"),
   );
   offer("doctor.draftDocument", "doctor: draft a task for this document", `!doctorDrafting && !${selected}`, () => {
     hooks.beginDrafting();
-    hooks.requestDocument();
+    openTask("draft", "document");
   });
-  offer("doctor.addToDraft", "doctor: add to the draft", `doctorDrafting && ${selected}`, () => openTask("draft"));
+  offer("doctor.addToDraft", "doctor: add to the draft", `doctorDrafting && ${selected}`, () => openTask("draft", "selection"));
   offer("doctor.addDocumentToDraft", "doctor: add a request for this document to the draft", `doctorDrafting && !${selected}`, () =>
-    hooks.requestDocument(),
+    openTask("draft", "document"),
   );
   offer("doctor.stopDrafting", "doctor: stop drafting", "doctorDrafting", () => hooks.stopDrafting());
 
@@ -1476,6 +1571,7 @@ export function createTextView(host: HTMLElement, hooks: _Hooks_View_): _View_Te
     mark,
     proposals: showProposals,
     focus: focusOn,
+    requestForDocument: (route) => openTask(route, "document"),
     dispose: () => {
       observer.disconnect();
       hover.dispose();
