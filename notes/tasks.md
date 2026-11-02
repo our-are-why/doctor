@@ -22,8 +22,8 @@ a document, as its file holds it, is the trunk. a task is a branch off it:
 | a review suggestion | a proposal |
 | committing a suggestion | accepting a proposal |
 | pushing your own commits | editing in task mode |
-| a review comment | requesting changes |
-| editing the PR's description | steering the brief |
+| a review comment | a request on a proposal |
+| editing the PR's description | steering: making more requests |
 | merge | complete |
 | close without merging | cancel |
 | a rebase | replaying the task onto the trunk |
@@ -60,71 +60,87 @@ everything you edit in task mode belongs to the task. doctor doesn't try to
 judge which edits are related to it. there's only ever one active task, so
 parking one and making another active switches branches.
 
-## what a task asks for
+## requests
 
-a task is a **goal**, a **scope** and, optionally, **parts**.
+a task is its **requests**: what you ask the agent for. every request
+belongs to a task. a request is its text and, optionally, its **targets**:
+where it applies.
 
-- **the goal** is what the task is for, in your words: "simplify", "audit
-  grammar", "make the terms consistent".
-- **the scope** is where the agent may change things. it's a list of
-  regions, each one of:
-  - **a whole document**, meaning whatever it holds when the agent works,
-    so text added later is covered;
-  - **a node**: a block, a list item, or a section with everything under it;
-  - **a passage**: a range of characters within one text, such as a
-    sentence or a phrase, anchored the way notes are.
-- **a part** is a focused request within the task: a region and its own
-  instruction. a part's region is in scope by virtue of being a part.
+- **with targets, a request applies strictly there.** a target is one of:
+  - **a whole document:** whatever it holds when the agent works, so text
+    added later is covered too;
+  - **a node:** a block, a list item, or a section with everything under it;
+  - **a passage:** a range of characters within one text, such as a
+    sentence or a phrase;
+  - **a proposal, or words in it:** changes to that proposal, which send it
+    back.
+- **one request can have several targets,** so "use the same term" in five
+  places is one request.
+- **without targets, a request applies to every document in the project.**
+  its own words can narrow that loosely ("cleanup grammar in spike"), and
+  the agent reads them that way.
+- **where a task may act** follows from its requests: anywhere, if any
+  request has no targets, and otherwise all its requests' targets together.
+  there's no scope to set.
+- **a task is named** by its first request.
+- **targets in documents are anchored the way notes are,** to a document, a
+  node or a passage, never to line numbers, each at the version it was made
+  against. when the text under one changes or goes away, it's detached, and
+  keeps what it was attached to. requests live in the task, not in the
+  document's file.
 
-| you want | goal | scope | parts |
-|---|---|---|---|
-| "simplify" this sentence | simplify | the sentence | none |
-| "use the same term" in five places | use the same term | the five places | none |
-| "audit grammar" across documents | audit grammar | the documents | none |
-| fix X here, Y there, Z there | a summary, optionally | the three places | three |
-| "make it consistent, and X here" | make it consistent | the document | one |
+| you want | requests | their targets |
+|---|---|---|
+| "simplify" this sentence | simplify | the sentence |
+| "use the same term" in five places | use the same term | the five places |
+| "audit grammar" in two documents | audit grammar | the two documents |
+| "cleanup grammar in spike" | cleanup grammar in spike | none: the agent reads "in spike" |
+| fix X here, Y there | fix X; fix Y | here; there |
+| "make it consistent, and X here" | make it consistent; X | the document; the place |
+| all of that, in British spelling | …and keep British spelling | none: everywhere |
 
-regions are anchored to nodes and passages, never to line numbers, each at
-the version it was written against.
+since a request without targets reaches every document, the agent needs to
+see the project's documents: a `doctor documents` listing each one, with its
+id and title.
+
+you make requests, the agent answers with proposals, and you decide.
 
 ## steering
 
-a task's brief is a list of versions (the domain has this already). each
-steer writes a new version:
-
-- add a part: select a place, then Add part, while the task is active;
-- change a part's instruction or region, or drop it;
-- change the goal, or widen or narrow the scope;
-- follow on from a proposal ("add part here"), when a change opens a new
-  direction rather than needing a fix.
+a task's brief is its requests over time, as versions (the domain has
+versions already). steering is making more requests, or changing or
+dropping one, while the task runs. each steer writes a new version, and
+that includes following on from a proposal when a change opens a new
+direction rather than needing a fix.
 
 the agent's next `doctor wait` says what changed since it last looked.
 
 - **it's the agent's turn whenever it has something to do:** new or changed
-  parts, a changed goal, or proposals sent back. that's whether or not
+  requests, including requests on its proposals. that's whether or not
   proposals are waiting for review, so it works while you review.
-- **a proposal answering an older brief version is marked as such.** it can
-  still be accepted or rejected.
-- **the agent can propose widening the scope** when a change ripples outside
-  it. you accept or decline that like any other proposal.
+- **a proposal answering an older brief version is marked as such.**
+  proposals already record the version they answer. it can still be
+  accepted or rejected.
+- **the agent can ask to go further** when a change ripples past where your
+  requests are. you accept or decline that like any other proposal.
 
 ## proposals and review
 
-a proposal is one independent change, a focused diff. it says what it
-answers: a part, or the goal. review can then say "2 of 3 parts answered"
-and show a part the agent skipped.
+a proposal is one independent change, a focused diff. it says which
+requests it answers. review can then say "2 of 3 requests answered" and show
+one the agent skipped.
 
 - **accept** applies it to the task's head, not to the document.
 - **reject** drops it.
-- **request changes** sends it back to the agent with comments. a comment
-  can be anchored to words in the proposed text ("this phrase is wrong") or
-  apply to the whole proposal. only the proposals sent back are revised.
+- **a request on it** sends it back to the agent. the request can be on the
+  whole proposal, or on words in the proposed text ("this phrase is
+  wrong"). only the proposals sent back are revised.
 - **to edit a proposal yourself,** accept it and then edit it. in task mode
   that's just one of your edits in the task.
 
-the proposed text has to be selectable for comments, so its lines move out
-of Monaco's view zones, which sit beneath the text and never get the mouse,
-into the overlay that already holds the header.
+the proposed text has to be selectable for requests on its words, so its
+lines move out of Monaco's view zones, which sit beneath the text and never
+get the mouse, into the overlay that already holds the header.
 
 ## finishing
 
@@ -160,32 +176,58 @@ needed, never stored, and it's separate from the task's state:
   replayed when it's resumed.
 - **conflicted:** replaying the task's changes hits nodes changed on both
   sides.
-- **regions changed:** a region's text or node has changed since it was
-  written, so the brief may need steering. this applies to drafts too.
+- **requests detached:** the text a request was on has changed or gone
+  since it was made, so the brief may need steering. this applies to drafts
+  too.
 
 ## making tasks
 
-- **the common case:** select one place or several (Cmd+click and Alt+drag
-  add selections), write the instruction in the form beside the selection,
-  press Enter.
-- **composite:** the form's Add part opens a draft, and each later
-  selection and instruction adds a part to it, in any document, marked in
-  the margin. Start sends it. there's one draft at a time, the current
-  task, so Add part never has to ask which one.
-- **whole documents:** with nothing selected, the task covers this
-  document. several documents come from the dashboard, or from selecting
-  files in the Explorer.
+each way of making a request has one meaning:
+
+| gesture | the request's targets |
+|---|---|
+| select something, then the form beside it | what you selected |
+| the bar at the top of the editor, or right-click "doctor: request for this document" | this document |
+| the dashboard's New task | none: the whole project, unless its words say otherwise |
+| the Explorer's "doctor: new task" on files | those files |
+
+- **the quick path is a selection:** select one place or several (Cmd+click
+  and Alt+drag add selections), write in the form beside it, press Enter.
+  that makes a task in one go, with one request targeting what you selected.
+  it always has targets, so it only opens with a selection.
+- **the request bar** sits at the top of the editor: "Ask for something in
+  this document…". typing in it and pressing Enter makes a task with one
+  request targeting this document, with nothing to select. right-click
+  "doctor: request for this document", and "doctor: new task" with nothing
+  selected, put the caret in it.
+
+**focus:** a mode around one task, a draft or the active one, for anything
+more than one request.
+
+- **you focus a task:** a new one, started from a selection, a document or
+  the dashboard, or an existing one.
+- **the request bar becomes the focus bar.** it shows the task: its name,
+  editable in place, how many requests it has, and Start for a draft.
+  typing in it adds a request targeting this document to the task.
+- **while it's focused, you make requests anywhere:** select a phrase or a
+  block, write in the form beside it, and press Enter, and it adds to the
+  task instead of making a new one. its requests show in the margin of
+  every document you visit. hovering one shows its text, and clicking it
+  lets you change or remove it.
+- **focus lasts** as you move between documents, and across reloads.
+- **the gestures are the same for a draft and the active task.** on the
+  active task, a request is a steer.
 
 ## the task view, later
 
 the other perspective: one task across all its documents, where the
-document editor is one document across all tasks. each region is shown as
-an excerpt with a little context, its part's instruction and its
-proposals, with the brief's versions as the task's history. you'd review,
-steer and edit there.
+document editor is one document across all tasks. each request is shown as
+an excerpt with a little context, with its proposals and the brief's
+versions as the task's history. you'd review, steer and edit there.
 
-it needs two things from the model, both in the shape above: regions
-anchored to nodes and passages, and proposals that say what they answer.
+it needs two things from the model, both in the shape above: requests
+anchored to nodes and passages, and proposals that say which requests they
+answer.
 
 ## today
 
@@ -209,25 +251,35 @@ anchored to nodes and passages, and proposals that say what they answer.
 - a task is a branch. the file holds the trunk until the task completes.
 - everything edited in task mode belongs to the task.
 - in task mode, the editor marks what the task changed as not yet applied.
-- a task is a goal, a scope of regions, and optional parts.
+- a task is its requests. a request is text with optional targets: whole
+  documents, nodes, passages or proposals. with targets it applies strictly
+  there, and without, to every document in the project, which its words can
+  narrow loosely. there's no scope to set.
 - the brief is steerable, as versions, and the agent works while you review.
-- proposals are focused, say what they answer, and take comments anchored to
-  their words. you edit a proposal by accepting and then editing it.
+- proposals are focused, say which requests they answer, and take requests
+  on their words. you edit a proposal by accepting and then editing it.
+- focus is the mode for building and steering a task across documents; the
+  quick path makes one in a single gesture from a selection, and the
+  request bar at the top of the editor from the document.
 - a task completes on its own once it's submitted and every proposal is
   accepted or rejected.
 - git is the history. doctor keeps only what open work needs.
-- freshness is worked out, not stored: behind, conflicted, regions changed.
+- freshness is worked out, not stored: behind, conflicted, requests detached.
 
 ## open
 
-- should passages be usable as scope from the start, or nodes only at first?
-- is the goal optional when a task has parts?
-- can the agent add parts itself, or only propose under the goal and ask to
-  widen the scope?
+- can you focus a draft while another task is active, to compose the next
+  task while the agent works on this one?
+- do your edits while a draft is focused go into the draft, so you can
+  prepare changes before starting it, or do edits only belong to the active
+  task?
+- can the agent make requests itself ("I found two more places"), or only
+  propose and ask to go further?
 - should cancel offer to keep your own edits? an edit to text that only the
   task introduced has nothing to apply to, so it would be dropped, and doctor
   would say so.
 - what does a completed task leave behind: a small record, or nothing?
-- should completing a task offer to commit, with the goal as the message?
+- should completing a task offer to commit, with the task's name as the
+  message?
 - should a task be replayed whenever the trunk moves, or only when it's next
   active?
