@@ -15,7 +15,11 @@ and comes back to you if any is sent back for changes.
   doctor wait [--for <s>]  wait for your turn: a task to work on, or proposals sent
                            back for changes. Answers as doctor task does, with "turn" and
                            "next", the step to take. With --for, it gives up after that
-                           many seconds, answering { "turn": "human", ... }
+                           many seconds, answering { "turn": "human", ... }. A proposal
+                           sent back says what should change in its "feedback", and may
+                           have "passages", notes on words of the text it proposed: each
+                           the "words", the text "within" which they are, and the "note".
+                           Revise it as the same proposal, with doctor propose
   doctor task              the active task: its "requests", each with its "text" and
                            "targets", each target shown as it is now: a "document"
                            with all its "blocks", a "node", or a "passage" of a text

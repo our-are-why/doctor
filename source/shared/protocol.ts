@@ -106,8 +106,11 @@ export interface _REJECT_Verdict__Review_ extends __BASE_Verdict__Review_<"rejec
   reason: string;
 }
 
+// what should change in a proposal, and notes on words of its proposed text,
+// one or the other at least
 export interface _REQUEST_Verdict__Review_ extends __BASE_Verdict__Review_<"request"> {
   feedback: string;
+  passages: Array<{ words: string; within: string; note: string }>;
 }
 
 // a rejected proposal reconsidered, waiting for review again
@@ -172,7 +175,14 @@ export interface _CANCEL_Message__Client_ extends __BASE_Message__Client_<"cance
 const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kind", [
   v.strictObject({ kind: v.literal("accept") }),
   v.strictObject({ kind: v.literal("reject"), reason: v.string() }),
-  v.strictObject({ kind: v.literal("request"), feedback: v.pipe(v.string(), v.minLength(1)) }),
+  v.pipe(
+    v.strictObject({
+      kind: v.literal("request"),
+      feedback: v.string(),
+      passages: v.array(v.strictObject({ words: v.pipe(v.string(), v.minLength(1)), within: v.string(), note: v.string() })),
+    }),
+    v.check((request) => request.feedback.trim() !== "" || request.passages.length > 0, "a request says what should change"),
+  ),
   v.strictObject({ kind: v.literal("reopen") }),
 ]);
 
@@ -270,6 +280,12 @@ export interface _Open_Proposal_ {
   rounds: number;
   feedback: string;
   changed: Array<_Holder_Text_>;
+  // the amendments last requested of it: what should change in the whole of
+  // it, with no words, and notes on words of its proposed text
+  amendments: Array<{ words: string; within: string; note: string }>;
+  // waiting for review again after revising, its operations as its round
+  // before had them, for what's changed since to be marked
+  before: Array<_NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>>;
 }
 
 // the active task's proposals on a file, sent whenever they change
@@ -387,6 +403,8 @@ const openProposalSchema: v.GenericSchema<unknown, _Open_Proposal_> = v.strictOb
   rounds: v.number(),
   feedback: v.string(),
   changed: v.array(holderSchema),
+  amendments: v.array(v.strictObject({ words: v.string(), within: v.string(), note: v.string() })),
+  before: v.array(proposalOperationsSchema),
 });
 
 export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v.variant("kind", [

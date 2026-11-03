@@ -21,6 +21,7 @@ import type {
   _Operation_Change_,
   _PARK_Transition__Task_,
   _Proposal_Task_,
+  _Passage_Feedback_,
   _PROPOSED_Proposal__Task_,
   _REJECTED_Proposal__Task_,
   _Reason_Task_,
@@ -712,6 +713,7 @@ export function requestChanges(
   id: _Id_Task_,
   proposalId: _Id_Proposal_,
   feedback: _Text_Doctor_,
+  passages: Array<_Passage_Feedback_>,
 ): Promise<_Outcome_Task_<_Id_Proposal_>> {
   return updateTask(place, id, async (task) => {
     const [proposal] = [...waitingProposal(task, proposalId), ...decidedProposal(task, proposalId)];
@@ -722,7 +724,7 @@ export function requestChanges(
       state: "revising",
       id: proposal.id,
       document: proposal.document,
-      rounds: [...earlier, { kind: "requested", version, request: { made: stamp("human"), feedback } }],
+      rounds: [...earlier, { kind: "requested", version, request: { made: stamp("human"), feedback, passages } }],
     };
     const proposals = replace(task.proposals, revising);
     return done({ task: { ...task, state: "working", proposals }, value: proposal.id });

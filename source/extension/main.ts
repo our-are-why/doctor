@@ -202,8 +202,22 @@ async function changedBy(data: string, change: _Ref_Change_): Promise<Array<_Hol
 // revised or once it's proposed again; or why you rejected it, if you said.
 function feedbackOf(proposal: _Proposal_Task_): string {
   if (proposal.state === "rejected") return proposal.reason.kind === "stated" ? proposal.reason.text.text : "";
-  const asked = proposal.rounds.flatMap((round) => (round.kind === "requested" ? [round.request.feedback.text] : []));
+  // what was asked overall, or else what was noted on its words
+  const asked = proposal.rounds.flatMap((round) =>
+    round.kind === "requested"
+      ? [round.request.feedback.text || round.request.passages.map((passage) => `“${passage.words}”: ${passage.note.text}`).join(" · ")]
+      : [],
+  );
   return proposal.state === "accepted" ? "" : (asked.at(-1) ?? "");
+}
+
+// The amendments last requested of a proposal still in play: what should
+// change in the whole of it, with no words, then notes on its words.
+function amendmentsOf(proposal: _Proposal_Task_): Array<{ words: string; within: string; note: string }> {
+  const [last] = proposal.rounds.flatMap((round) => (round.kind === "requested" ? [round.request] : [])).slice(-1);
+  if (last === undefined) return [];
+  const whole = last.feedback.text.trim() === "" ? [] : [{ words: "", within: "", note: last.feedback.text }];
+  return [...whole, ...last.passages.map((passage) => ({ words: passage.words, within: passage.within, note: passage.note.text }))];
 }
 
 // the active task's proposals on a file's documents, all but those withdrawn
@@ -230,6 +244,11 @@ async function openProposals(tasks: Array<_Task_Doctor_>, file: string): Promise
         rounds: proposal.rounds.length,
         feedback: feedbackOf(proposal),
         changed,
+        amendments: amendmentsOf(proposal),
+        before:
+          proposal.state === "proposed" && proposal.rounds.length > 1
+            ? proposal.rounds.slice(-2, -1).map((round) => round.version.operations)
+            : [],
       });
     }
   }
@@ -469,7 +488,8 @@ async function reviewProposal(message: _REVIEW_Message__Client_, send: _Send_Ses
     const outcome = await reopen(place, message.task, message.proposal);
     return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
   }
-  const outcome = await requestChanges(place, message.task, message.proposal, { text: verdict.feedback, overlay: [] });
+  const passages = verdict.passages.map((passage) => ({ ...passage, note: { text: passage.note, overlay: [] } }));
+  const outcome = await requestChanges(place, message.task, message.proposal, { text: verdict.feedback, overlay: [] }, passages);
   return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
 }
 

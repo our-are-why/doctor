@@ -617,9 +617,21 @@ export interface _Version_Proposal_ {
   operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
 }
 
+// What's asked of a proposal sent back: what should change in it, and
+// passages, notes on words of its proposed text. It's revised as the same
+// proposal, never one of its own.
 export interface _Request_Proposal_ {
   made: _Stamp_Doctor_;
   feedback: _Text_Doctor_;
+  passages: Array<_Passage_Feedback_>;
+}
+
+// words of a proposal's text a request's about: the words, the text they're
+// in as the proposal has it, and what should change about them
+export interface _Passage_Feedback_ {
+  words: string;
+  within: string;
+  note: _Text_Doctor_;
 }
 
 // transitions

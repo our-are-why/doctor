@@ -442,7 +442,12 @@ const standingSchema: v.GenericSchema<unknown, _STANDING_Round__Proposal_> = v.s
 const requestedSchema: v.GenericSchema<unknown, _REQUESTED_Round__Proposal_> = v.strictObject({
   kind: v.literal("requested"),
   version: proposalVersionSchema,
-  request: v.strictObject({ made: stampSchema, feedback: textSchema }),
+  request: v.strictObject({
+    made: stampSchema,
+    feedback: textSchema,
+    // requests made before they could note words of a proposal have none
+    passages: v.optional(v.array(v.strictObject({ words: v.string(), within: v.string(), note: textSchema })), () => []),
+  }),
 });
 
 const roundSchema: v.GenericSchema<unknown, _Round_Proposal_> = v.union([standingSchema, requestedSchema]);
@@ -452,13 +457,21 @@ const roundSchema: v.GenericSchema<unknown, _Round_Proposal_> = v.union([standin
 function roundsSchema<__Last__ extends _Round_Proposal_>(
   lastSchema: v.GenericSchema<unknown, __Last__>,
 ): v.GenericSchema<unknown, [...Array<_REQUESTED_Round__Proposal_>, __Last__]> {
-  return v.custom<[...Array<_REQUESTED_Round__Proposal_>, __Last__]>(
-    (input) =>
-      Array.isArray(input) &&
-      input.length > 0 &&
-      input.slice(0, -1).every((round) => parse(requestedSchema, round).kind === "parsed") &&
-      parse(lastSchema, input.at(-1)).kind === "parsed",
-    "a proposal's rounds are its earlier requested ones, then its last",
+  return v.pipe(
+    v.custom<Array<unknown>>(
+      (input) =>
+        Array.isArray(input) &&
+        input.length > 0 &&
+        input.slice(0, -1).every((round) => parse(requestedSchema, round).kind === "parsed") &&
+        parse(lastSchema, input.at(-1)).kind === "parsed",
+      "a proposal's rounds are its earlier requested ones, then its last",
+    ),
+    // each round as its schema reads it, with what it fills in for what an
+    // older round doesn't have
+    v.transform((input): [...Array<_REQUESTED_Round__Proposal_>, __Last__] => [
+      ...input.slice(0, -1).map((round) => parseOwn(requestedSchema, round)),
+      parseOwn(lastSchema, input.at(-1)),
+    ]),
   );
 }
 

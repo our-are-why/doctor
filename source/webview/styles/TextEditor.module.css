@@ -366,9 +366,14 @@
    centred within them; the field in the editor's font, set where it opens.
    Its purple is the selection's while it's open, to tie the two together */
 
+/* Every form for requesting a change looks the same, wherever it opens:
+   among the document's lines, docked under the bar, among a proposal's lines
+   or under its bar. Its band is over the editor's background, so a
+   proposal's colours don't show through, and its purple bar is in the margin
+   beside it, at the editor's left edge, where proposals' bars are, its
+   fields in line with the text. */
 .taskBox {
-  background: color-mix(in srgb, var(--vscode-editor-foreground) 6%, transparent);
-  box-shadow: inset 3px 0 0 var(--vscode-charts-purple, #b180d7);
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 6%, var(--vscode-editor-background));
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -378,8 +383,7 @@
   padding: 8px 12px;
 }
 
-.taskInput,
-.changesInput {
+.taskInput {
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
   border-radius: 2px;
@@ -401,11 +405,13 @@
   border-color: var(--vscode-charts-purple, #b180d7);
 }
 
-.changesInput:focus {
-  border-color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-focusBorder));
+/* while the form's open, what it's about, in the form's colour */
+/* the request form's bar, at the editor's left edge, beside the lines it's
+   about, as a proposal's runs beside its */
+:global(.monaco-editor) .targetedGutter {
+  background: linear-gradient(to right, var(--vscode-charts-purple, #b180d7) 3px, transparent 3px);
 }
 
-/* while the form's open, what it's about, in the form's colour */
 :global(.monaco-editor) .targeted {
   background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 35%, transparent);
 }
@@ -478,6 +484,34 @@
 
 :global(.monaco-editor) .restyledWords {
   --edge: var(--vscode-charts-purple, #b180d7);
+}
+
+/* what's changed in a proposal since its round before, once it's back from
+   revising: dotted under the words, coloured as they'd be boxed; not while
+   it's amended, when only what's amended is marked */
+.sinceInserted,
+.sinceReplaced,
+.sinceRestyled {
+  text-decoration: underline dotted var(--since);
+  text-decoration-skip-ink: none;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.amending :is(.sinceInserted, .sinceReplaced, .sinceRestyled) {
+  text-decoration: none;
+}
+
+.sinceInserted {
+  --since: var(--vscode-charts-green, #89d185);
+}
+
+.sinceReplaced {
+  --since: var(--vscode-charts-blue, #3794ff);
+}
+
+.sinceRestyled {
+  --since: var(--vscode-charts-purple, #b180d7);
 }
 
 /* replaced by words marked differently: one ring in both colours, a
@@ -554,12 +588,6 @@
   --band: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 12%, transparent);
 }
 
-/* a line a proposal sent back targets: its bar alone, no band, as what it
-   would do is put away while the agent revises it */
-:global(.monaco-editor) .revisingGutter {
-  --band: transparent;
-}
-
 :global(.monaco-editor) .movedGutter {
   --band: color-mix(in srgb, var(--vscode-editor-foreground) 5%, transparent);
 }
@@ -593,15 +621,23 @@
 /* what a proposal adds, its words where the document's are; its band and
    bar start in the margin, where the number of the line it's under does, at
    --left, as the request form's do */
+/* its lines, in an overlay over its zone, where their words can be
+   selected to note in a request; its band is the zone's */
 .proposalAdded {
-  background: var(--added);
   box-sizing: border-box;
   color: var(--vscode-editor-foreground);
+  cursor: text;
   font-family: var(--vscode-editor-font-family, monospace), monospace;
   font-size: var(--vscode-editor-font-size);
+  -webkit-user-select: text;
+  user-select: text;
 }
 
-.proposalAdded,
+.proposalBand {
+  background: var(--added);
+}
+
+.proposalBand,
 .proposalMargin,
 .proposalActionsMargin,
 .proposalActionsBand,
@@ -619,17 +655,17 @@
    when it only removes, blue when it only moves. A decision has none: a
    rejected proposal shown again has a neutral bar, what it would do keeping
    its colours. */
-:is(.proposalAdded, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).removeKind {
+:is(.proposalBand, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).removeKind {
   --added: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
   --bar: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground));
 }
 
-:is(.proposalAdded, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).moveKind {
+:is(.proposalBand, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).moveKind {
   --added: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 14%, transparent);
   --bar: var(--vscode-charts-blue, #3794ff);
 }
 
-:is(.proposalAdded, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).decidedKind {
+:is(.proposalBand, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).decidedKind {
   --added: color-mix(in srgb, var(--vscode-editor-foreground) 6%, transparent);
   --bar: color-mix(in srgb, var(--vscode-editor-foreground) 35%, transparent);
   --shade: transparent;
@@ -722,11 +758,34 @@
 }
 
 .changesForm {
-  display: flex;
   flex: none;
-  flex-direction: column;
-  gap: 8px;
-  padding-bottom: 10px;
+}
+
+/* inside a proposal, out to the overlay's edges, its fields still in line
+   with the text */
+.proposalAdded > .taskBox,
+.proposalActions > .taskBox {
+  margin-left: calc(-1 * var(--text-inset, 0px));
+  padding-left: calc(12px + var(--text-inset, 0px));
+}
+
+.proposalActions > .taskBox {
+  margin-right: -6px;
+}
+
+/* a request form's bar and band in the margin beside it */
+.requestMargin {
+  background:
+    linear-gradient(to right, var(--vscode-charts-purple, #b180d7) 3px, transparent 3px),
+    color-mix(in srgb, var(--vscode-editor-foreground) 6%, var(--vscode-editor-background));
+}
+
+/* laid over a proposal's margin, beside a form opened in it */
+.requestSlice {
+  left: 0;
+  position: absolute;
+  width: 100%;
+  z-index: 1;
 }
 
 .proposalAccept,
@@ -774,3 +833,167 @@
     );
 }
 
+/* a proposal's batched changes, in the form under its bar: the words each's
+   about, or the whole of it, and its note, which can be edited */
+.batchList {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  font-size: 0.9em;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.batchList:empty {
+  display: none;
+}
+
+/* a proposal's lines while the agent revises them: as they were sent back,
+   pulsing, so they read as changing; still, and faded, where motion's
+   unwanted */
+.revisingLines {
+  animation: revising 1.8s ease-in-out infinite;
+}
+
+@keyframes revising {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .revisingLines {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* while a proposal's revised, the amendments requested, under its bar */
+.amendmentsSent {
+  padding: 0 0 8px;
+}
+
+.amendmentNote {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* how many are drafted, quietly, above them */
+.batchHeading {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+/* each a quiet row: its words, its note, read as text till it's hovered or
+   edited, and a way to take it out, shown on hovering */
+.batchEntry {
+  align-items: center;
+  border-radius: 2px;
+  display: flex;
+  gap: 0.6rem;
+  padding: 1px 0;
+}
+
+.batchEntry > button {
+  visibility: hidden;
+}
+
+.batchEntry:hover > button,
+.batchEntry:focus-within > button {
+  visibility: visible;
+}
+
+.batchWhole {
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+  font-style: italic;
+}
+
+.batchWords {
+  background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 25%, transparent);
+  border-radius: 2px;
+  color: var(--vscode-editor-foreground);
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  padding: 0 0.3rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batchNote {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--vscode-foreground);
+  flex: 1;
+  font: inherit;
+  min-width: 0;
+  outline: none;
+  padding: 2px 6px;
+}
+
+.batchNote:hover {
+  border-color: var(--vscode-input-border, color-mix(in srgb, var(--vscode-foreground) 20%, transparent));
+}
+
+.batchNote:focus {
+  background: var(--vscode-input-background);
+  border-color: var(--vscode-charts-purple, #b180d7);
+}
+
+/* the right-click menu over a proposal's lines, as VS Code's menus look */
+.proposalMenu {
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  min-width: 14em;
+  padding: 4px 0;
+  position: fixed;
+  z-index: 200;
+}
+
+.proposalMenu button {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.3rem 1.2rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.proposalMenu button:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, inherit);
+}
+
+/* the words a change to a proposal is being written about, in the request
+   form's purple; and those batched, dotted, as a draft's requests are */
+::highlight(doctor-writing) {
+  background-color: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 35%, transparent);
+}
+
+::highlight(doctor-batched) {
+  text-decoration: underline dotted color-mix(in srgb, var(--vscode-editor-foreground) 60%, transparent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}

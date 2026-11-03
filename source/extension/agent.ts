@@ -32,8 +32,8 @@ const issues = (status: number, list: Array<string>) => answer(status, { issues:
 const reasonOf = (reason: _Reason_Task_) => (reason.kind === "stated" ? { reason: reason.text.text } : {});
 
 // what the agent needs of a proposal: where it stands, the requests it
-// answers, what was asked of it if it's being revised, and why if it was
-// turned down
+// answers, what was asked of it if it's being revised, its feedback and
+// notes on words of its proposed text, and why if it was turned down
 function proposalSummary(proposal: _Proposal_Task_) {
   const last = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
   return {
@@ -41,7 +41,14 @@ function proposalSummary(proposal: _Proposal_Task_) {
     document: proposal.document,
     state: proposal.state,
     answers: last.version.answers,
-    ...(last.kind === "requested" ? { feedback: last.request.feedback.text } : {}),
+    ...(last.kind === "requested"
+      ? {
+          feedback: last.request.feedback.text,
+          ...(last.request.passages.length === 0
+            ? {}
+            : { passages: last.request.passages.map((passage) => ({ words: passage.words, within: passage.within, note: passage.note.text })) }),
+        }
+      : {}),
     ...(proposal.state === "rejected" || proposal.state === "withdrawn" ? reasonOf(proposal.reason) : {}),
   };
 }
@@ -110,7 +117,7 @@ async function taskView(place: _Place_Tasks_, task: _ACTIVE_Task__Doctor_) {
 function nextStep(task: _WORKING_Task__Doctor_): string {
   const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
   if (revising.length > 0) {
-    return `revise proposal ${revising.join(", ")} as its feedback asks, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit --note "<what you changed>"\`, then \`doctor wait\``;
+    return `revise proposal ${revising.join(", ")} as its feedback and passages ask, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit --note "<what you changed>"\`, then \`doctor wait\``;
   }
   if (task.proposals.length === 0) {
     return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers; a request without targets reaches every document, which `doctor documents` lists; then `doctor submit --note \"<what you did, or why nothing needed changing>\"` to hand them over, and `doctor wait`";
