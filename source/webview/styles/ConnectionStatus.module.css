@@ -9,8 +9,9 @@
   color: var(--vscode-descriptionForeground);
 }
 
+/* connected is how it should be, so it's neutral: green means added */
 .open {
-  color: var(--vscode-testing-iconPassed);
+  color: var(--vscode-foreground);
 }
 
 .closed {

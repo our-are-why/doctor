@@ -21,9 +21,9 @@
   padding: 6px 8px 14px;
 }
 
-/* while a draft's being made, the bar says so */
+/* while a draft's being made, the bar says so, purple, as what you request is */
 .draftingBar {
-  box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+  box-shadow: inset 2px 0 0 var(--vscode-charts-purple, #b180d7);
 }
 
 /* the bar's left: the document's status, its parts plain words apart by
@@ -90,16 +90,19 @@
   width: 1em;
 }
 
+/* A task's mark is neutral, its shape saying where it is, except when it's
+   your turn, purple, as what's yours is: green, yellow and the rest each
+   mean what a proposal does. */
 .done {
-  color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-foreground));
+  color: var(--vscode-foreground);
 }
 
 .yours {
-  color: var(--vscode-focusBorder);
+  color: var(--vscode-charts-purple, #b180d7);
 }
 
 .away {
-  color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+  color: var(--vscode-descriptionForeground);
 }
 
 .stopped {
@@ -449,15 +452,28 @@
   background: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
 }
 
-/* a text a proposal changes in place: its line yellow, and its words, and
-   its new version's, boxed for what happens to them: red where they go,
-   green where they're new, blue where they're replaced, on both lines so
-   the two pair up, and purple where they keep their words but not their
-   marks. A box is an inner ring, taking no room, and no style a document
-   uses, so a word's own marks show as they are. */
+/* A text a proposal changes in place: its line yellow, and its words, and
+   its new version's, boxed for what happens to them, on both lines so the
+   two pair up, each colour meaning here what it does everywhere: red where
+   they go, green where they're new, yellow where they're changed, a solid
+   ring where they're replaced, a dashed one where they keep their words but
+   not their marks, and one half of each where they're replaced by words
+   marked differently. A box is an inner ring, taking no room, and no style
+   a document uses, so a word's own marks show as they are. */
+
+/* Hatched, not tinted: a faint yellow tint reads brown on a dark
+   background, as a move's band is, but stripes can't be taken for a band.
+   Two to a line, from --line, its height, so a line's stripes run on into
+   the next's. */
+:global(.monaco-editor) .changedLine,
+:global(.monaco-editor) .changedGutter {
+  --stripe: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 16%, transparent);
+  --hatch: linear-gradient(135deg, var(--stripe) 25%, transparent 25% 50%, var(--stripe) 50% 75%, transparent 75%);
+  --hatch-size: calc(var(--line, 20px) / 2) calc(var(--line, 20px) / 2);
+}
 
 :global(.monaco-editor) .changedLine {
-  background: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 12%, transparent);
+  background: var(--hatch) 0 0 / var(--hatch-size);
 }
 
 :global(.monaco-editor) .removedWords,
@@ -475,7 +491,7 @@
 }
 
 :global(.monaco-editor) .replacedWords {
-  --edge: var(--vscode-charts-blue, #3794ff);
+  --edge: var(--vscode-charts-yellow, #cca700);
 }
 
 :global(.monaco-editor) .insertedWords {
@@ -483,22 +499,36 @@
 }
 
 :global(.monaco-editor) .restyledWords {
-  --edge: var(--vscode-charts-purple, #b180d7);
+  --edge: var(--vscode-charts-yellow, #cca700);
+  box-shadow: none;
+  outline: 1px dashed var(--edge);
+  outline-offset: -1px;
+}
+
+/* both: solid along its top and left, as a replacement's, dashed along its
+   bottom and right, as a restyle's; a border, as a ring can't be dashed,
+   in the room its padding takes elsewhere, so it's the same size */
+:global(.monaco-editor) .replacedRestyledWords {
+  --edge: var(--vscode-charts-yellow, #cca700);
+  border: 1px solid var(--edge);
+  border-bottom-style: dashed;
+  border-right-style: dashed;
+  box-shadow: none;
 }
 
 /* what's changed in a proposal since its round before, once it's back from
-   revising: dotted under the words, coloured as they'd be boxed; not while
-   it's amended, when only what's amended is marked */
+   revising: dotted under the words, green where they're new and yellow where
+   they're changed, as they'd be boxed; not while it's amended, when only
+   what's amended is marked */
 .sinceInserted,
-.sinceReplaced,
-.sinceRestyled {
+.sinceChanged {
   text-decoration: underline dotted var(--since);
   text-decoration-skip-ink: none;
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
 }
 
-.amending :is(.sinceInserted, .sinceReplaced, .sinceRestyled) {
+.amending :is(.sinceInserted, .sinceChanged) {
   text-decoration: none;
 }
 
@@ -506,21 +536,8 @@
   --since: var(--vscode-charts-green, #89d185);
 }
 
-.sinceReplaced {
-  --since: var(--vscode-charts-blue, #3794ff);
-}
-
-.sinceRestyled {
-  --since: var(--vscode-charts-purple, #b180d7);
-}
-
-/* replaced by words marked differently: one ring in both colours, a
-   replacement's blue along its top and left, a restyle's purple along its
-   bottom and right */
-:global(.monaco-editor) .replacedRestyledWords {
-  box-shadow:
-    inset 1px 1px 0 0 var(--vscode-charts-blue, #3794ff),
-    inset -1px -1px 0 0 var(--vscode-charts-purple, #b180d7);
+.sinceChanged {
+  --since: var(--vscode-charts-yellow, #cca700);
 }
 
 /* the text set in from its edge, where the editor clips it, by --text-inset,
@@ -541,18 +558,20 @@
   padding: 1px 3px;
 }
 
-:global(.monaco-editor .lines-content .cdr):is(
-    .removedWords,
-    .replacedWords,
-    .replacedRestyledWords,
-    .insertedWords,
-    .restyledWords
-  ) {
+.proposalAdded .replacedRestyledWords {
+  padding: 0 2px;
+}
+
+:global(.monaco-editor .lines-content .cdr):is(.removedWords, .replacedWords, .replacedRestyledWords, .insertedWords, .restyledWords) {
   bottom: 2px;
   height: auto;
   margin-left: -3px;
   padding: 0 3px;
   top: 2px;
+}
+
+:global(.monaco-editor .lines-content .cdr).replacedRestyledWords {
+  padding: 0 2px;
 }
 
 /* what a proposal moves elsewhere: dimmed where it is now */
@@ -570,22 +589,31 @@
    set by a class for each count, says how many digits that number has */
 :global(.monaco-editor) .targetGutter {
   --left: calc(var(--numbers-right, 0px) - var(--digits, 1) * var(--digit, 0px));
-  background: linear-gradient(
-    to right,
-    transparent var(--bar-at),
-    var(--bar) var(--bar-at) calc(var(--bar-at) + 3px),
-    var(--band) calc(var(--bar-at) + 3px)
-  );
+  /* its band, a shade unless it's hatched */
+  --band-image: linear-gradient(var(--band, transparent), var(--band, transparent));
+  --band-size: 100% 100%;
+  background:
+    linear-gradient(
+      to right,
+      transparent var(--bar-at),
+      var(--bar) var(--bar-at) calc(var(--bar-at) + 3px),
+      transparent calc(var(--bar-at) + 3px)
+    ),
+    var(--band-image);
+  background-size:
+    100% 100%,
+    var(--band-size);
 }
 
 :global(.monaco-editor) .removedGutter {
   --band: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
 }
 
-/* each the shade its line's background is, so a line reads as one band
-   from the margin through its text */
+/* each the shade its line's background is, or its hatching, so a line reads
+   as one band from the margin through its text */
 :global(.monaco-editor) .changedGutter {
-  --band: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 12%, transparent);
+  --band-image: var(--hatch);
+  --band-size: var(--hatch-size);
 }
 
 :global(.monaco-editor) .movedGutter {
@@ -652,7 +680,7 @@
 }
 
 /* A proposal's colour says what it does: green when it adds or changes, red
-   when it only removes, blue when it only moves. A decision has none: a
+   when it only removes, brown when it only moves. A decision has none: a
    rejected proposal shown again has a neutral bar, what it would do keeping
    its colours. */
 :is(.proposalBand, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).removeKind {
@@ -660,9 +688,15 @@
   --bar: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground));
 }
 
+/* a move's brown: what's removed where it leaves, red, and added where it
+   goes, green, mixed, and darkened from the tan that makes */
+:global(.monaco-editor) {
+  --moved: color-mix(in srgb, color-mix(in srgb, var(--vscode-charts-red, #f14c4c), var(--vscode-charts-green, #89d185)), black 20%);
+}
+
 :is(.proposalBand, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).moveKind {
-  --added: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 14%, transparent);
-  --bar: var(--vscode-charts-blue, #3794ff);
+  --added: color-mix(in srgb, var(--moved) 16%, transparent);
+  --bar: var(--moved);
 }
 
 :is(.proposalBand, .proposalMargin, .proposalActionsMargin, .proposalActionsBand, .targetGutter).decidedKind {
@@ -673,7 +707,7 @@
 
 /* a moved block's label, where it moves from: it goes there when clicked */
 :global(.monaco-editor) .moveLabel {
-  color: var(--vscode-charts-blue, #3794ff);
+  color: var(--moved);
   cursor: pointer;
   font-style: normal;
 }
@@ -993,7 +1027,7 @@
 }
 
 ::highlight(doctor-batched) {
-  text-decoration: underline dotted color-mix(in srgb, var(--vscode-editor-foreground) 60%, transparent);
+  text-decoration: underline dotted var(--vscode-charts-purple, #b180d7);
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
 }

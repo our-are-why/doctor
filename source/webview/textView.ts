@@ -254,10 +254,10 @@ type _Since_Line_ = { kind: "same" } | { kind: "whole" } | { kind: "words"; chan
 // proposal's round before, as it's boxed for what happens to it
 const sinceClass: Record<_Change_Text_["kind"], string> = {
   removed: "",
-  replaced: styles.sinceReplaced,
-  replacedRestyled: styles.sinceReplaced,
+  replaced: styles.sinceChanged,
+  replacedRestyled: styles.sinceChanged,
   inserted: styles.sinceInserted,
-  restyled: styles.sinceRestyled,
+  restyled: styles.sinceChanged,
 };
 
 // a node's lines as a proposal would leave the document, and whether a blank
@@ -891,6 +891,8 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const column = numberColumn();
     host.style.setProperty("--numbers-right", `${column.right}px`);
     host.style.setProperty("--digit", `${column.digit}px`);
+    // a line's height, for what's hatched to run on from line to line
+    host.style.setProperty("--line", `${height}px`);
     const digits = [styles.digits1, styles.digits2, styles.digits3, styles.digits4, styles.digits5];
     const gutter = (line: number, className: string) => `${className} ${digits[Math.min(String(line).length, digits.length) - 1] ?? ""}`;
     const actionsMargin = (after: number, tint: string) => {
