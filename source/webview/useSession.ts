@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type {
   _Document_Doctor_,
+  _Id_Document_,
   _Id_Node_,
   _Id_Proposal_,
   _Id_Task_,
@@ -73,6 +74,12 @@ export interface _Session_Webview_ {
   status: Array<_Task_Status_>;
   copyPrompt: () => void;
   acknowledge: (task: _Id_Task_) => void;
+  // the active task parked, canceled, steered with a request added to it, or
+  // its waiting proposals accepted, in a document or all of it
+  park: (task: _Id_Task_) => void;
+  cancel: (task: _Id_Task_) => void;
+  steer: (task: _Id_Task_, targets: Array<_Target_Request_>, text: string) => void;
+  acceptAll: (task: _Id_Task_, document: Array<_Id_Document_>, except: Array<_Id_Proposal_>) => void;
 }
 
 type _Due_Editor_ = "waiting" | "due";
@@ -199,6 +206,11 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const stopDrafting = () => send({ kind: "unfocus" });
   const copyPrompt = () => send({ kind: "copyPrompt" });
   const acknowledge = (task: _Id_Task_) => send({ kind: "acknowledge", task });
+  const park = (task: _Id_Task_) => send({ kind: "park", task });
+  const cancel = (task: _Id_Task_) => send({ kind: "cancel", task });
+  const acceptAll = (task: _Id_Task_, document: Array<_Id_Document_>, except: Array<_Id_Proposal_>) =>
+    send({ kind: "acceptAll", task, document, except });
+  const steer = (task: _Id_Task_, targets: Array<_Target_Request_>, text: string) => send({ kind: "steer", task, text, targets });
 
   return {
     load,
@@ -219,5 +231,9 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     status,
     copyPrompt,
     acknowledge,
+    park,
+    cancel,
+    steer,
+    acceptAll,
   };
 }

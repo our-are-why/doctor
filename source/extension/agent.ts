@@ -1,4 +1,5 @@
 import type {
+  _About_Summary_,
   _ACTIVE_Task__Doctor_,
   _Author_Doctor_,
   _Id_Document_,
@@ -8,9 +9,9 @@ import type {
   _Task_Doctor_,
   _WORKING_Task__Doctor_,
 } from "../shared/domain.next.ts";
-import { latestBrief, nameOf } from "../shared/brief.ts";
+import { latestBrief, nameOf, progressOf, proposalsFor } from "../shared/brief.ts";
 import { parse } from "../shared/parse.ts";
-import { proposalPayloadSchema, submitPayloadSchema } from "../shared/protocol.ts";
+import { proposalPayloadSchema, submitPayloadSchema, summarizePayloadSchema } from "../shared/protocol.ts";
 import { documentIdSchema } from "../shared/schema.ts";
 import { sliceOf } from "../shared/text.ts";
 import { indexNodes, textOfNode, type _Index_Document_ } from "../shared/tree.ts";
@@ -19,9 +20,11 @@ import {
   activeTask,
   agentsTurn,
   listTasks,
+  newRequests,
   propose,
   show,
   submit,
+  summarize,
   type _Place_Tasks_,
   type _Shown_Document_,
 } from "./tasks.ts";
@@ -41,6 +44,7 @@ function proposalSummary(proposal: _Proposal_Task_) {
     document: proposal.document,
     state: proposal.state,
     answers: last.version.answers,
+    rationale: last.version.rationale.text,
     ...(last.kind === "requested"
       ? {
           feedback: last.request.feedback.text,
@@ -113,21 +117,36 @@ async function taskView(place: _Place_Tasks_, task: _ACTIVE_Task__Doctor_) {
       request: request.id,
       text: request.text.text,
       targets: request.targets.map((target) => targetView(target, seen)),
+      // in progress till you hand the task over, then addressed, by the
+      // proposals that say they answer it
+      progress: progressOf(task, request),
+      proposals: proposalsFor(task, request),
     })),
     documents,
     proposals: task.proposals.map(proposalSummary),
+    // where it said the task stands, as a whole and in each document
+    summary: task.summaries.find((summary) => summary.about.kind === "task")?.text.text ?? "",
+    headline: task.summaries.find((summary) => summary.about.kind === "task")?.headline.text ?? "",
+    summaries: task.summaries.flatMap((summary) =>
+      summary.about.kind === "document" ? [{ document: summary.about.document, summary: summary.text.text, headline: summary.headline.text }] : [],
+    ),
   };
 }
 
 function nextStep(task: _WORKING_Task__Doctor_): string {
+  const steered = newRequests(task);
+  if (steered.length > 0) {
+    const named = steered.map((request) => `${request.id} ("${request.text.text}")`).join(", ");
+    return `answer the request${steered.length === 1 ? "" : "s"} made since you last handed the task over, ${named}, with \`doctor propose\`, in proposals of their own; what's waiting for review stays as it is; then \`doctor submit\`, with \`--summary\` and \`--headline\` if where the task stands has changed, and \`doctor wait\``;
+  }
   const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
   if (revising.length > 0) {
-    return `revise proposal ${revising.join(", ")} as its feedback and passages ask, from its "edited" operations where it has them, keeping those edits, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit --note "<what you changed>"\`, then \`doctor wait\``;
+    return `revise proposal ${revising.join(", ")} as its feedback and passages ask, from its "edited" operations where it has them, keeping those edits, with \`doctor propose\` for its document against the base shown here, its "changes" saying what this round changed, and its "rationale" if why it's this change has changed; once nothing's left to revise, \`doctor submit\`, with \`--summary "<where the task stands as a whole>"\` only if that's changed (what this round did belongs in its "changes", not the summary), then \`doctor wait\``;
   }
   if (task.proposals.length === 0) {
-    return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers; a request without targets reaches every document, which `doctor documents` lists; then `doctor submit --note \"<what you did, or why nothing needed changing>\"` to hand them over, and `doctor wait`";
+    return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers and saying why in its \"rationale\"; a request without targets reaches every document, which `doctor documents` lists; summarize each document you change with `doctor summarize --document <id> \"<what changes there, as its effect on the document, not a list of the proposals>\"`; then `doctor submit --summary \"<where the task stands as a whole: what it does, or why nothing needed changing>\" --headline \"<what it does or means, in one short line, without counts or states, which doctor shows>\"` to hand them over, and `doctor wait`";
   }
-  return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it; then `doctor submit --note \"<what you did>\"`, and `doctor wait`";
+  return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it; then `doctor submit`, with `--summary \"<where the task stands as a whole>\"` if that's changed, and `doctor wait`";
 }
 
 // what an agent is waiting on while it's the human's turn
@@ -272,10 +291,25 @@ export async function serveAgent(
     if (task === undefined) return issues(404, ["there's no active task to submit"]);
     const payload = parse(submitPayloadSchema, request.body);
     if (payload.kind === "rejected") return issues(400, payload.issues);
-    const outcome = await submit(place, task.id, payload.value === null ? "" : payload.value.note.trim());
+    const said =
+      payload.value === null
+        ? { summary: { text: "", headline: "" }, note: "" }
+        : "summary" in payload.value
+          ? { summary: { text: payload.value.summary.trim(), headline: payload.value.headline.trim() }, note: payload.value.summary.trim() }
+          : { summary: { text: "", headline: "" }, note: payload.value.note.trim() };
+    const outcome = await submit(place, task.id, said.summary, said.note);
     if (outcome.kind === "refused") return issues(409, outcome.issues);
     const { state, issues: problems } = outcome.value;
     return answer(200, problems.length === 0 ? { task: task.id, state } : { task: task.id, state, problems });
+  }
+  if (route === "POST /summarize") {
+    if (task === undefined) return issues(404, ["there's no active task to summarize"]);
+    const payload = parse(summarizePayloadSchema, request.body);
+    if (payload.kind === "rejected") return issues(400, payload.issues);
+    const about: _About_Summary_ = "document" in payload.value ? { kind: "document", document: payload.value.document } : { kind: "task" };
+    const outcome = await summarize(place, task.id, about, payload.value.summary, payload.value.headline);
+    if (outcome.kind === "refused") return issues(409, outcome.issues);
+    return answer(200, { task: task.id, summarized: about.kind === "task" ? "task" : about.document });
   }
   return issues(404, [`there's no route ${route}`]);
 }

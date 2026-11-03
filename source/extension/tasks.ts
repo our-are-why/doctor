@@ -3,6 +3,7 @@ import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { applyOperations } from "../shared/apply.ts";
 import type {
+  _About_Summary_,
   _ACCEPTED_Proposal__Task_,
   _ACTIVATE_Transition__Task_,
   _ACTIVE_Task__Doctor_,
@@ -33,17 +34,19 @@ import type {
   _REVISING_Proposal__Task_,
   _Stamp_Doctor_,
   _STANDING_Round__Proposal_,
+  _Summary_Task_,
   _Target_Request_,
   _Task_Doctor_,
   _Text_Doctor_,
   _Version_Document_,
+  _Version_Brief_,
   _Version_Proposal_,
   _WORKING_Task__Doctor_,
 } from "../shared/domain.next.ts";
 import { mintId } from "../shared/id.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
 import { parse, parseOwn, type _Result_Parse_ } from "../shared/parse.ts";
-import { latestBrief } from "../shared/brief.ts";
+import { latestBrief, progressOf } from "../shared/brief.ts";
 import { realize } from "../shared/proposals.ts";
 import type { _Listed_Document_ } from "../shared/protocol.ts";
 import {
@@ -84,12 +87,15 @@ export interface _REFUSED_Outcome__Task_ extends __BASE_Outcome__Task_<"refused"
 }
 
 // what a proposal says: which document, the version of it the agent was
-// shown, the requests it answers, and the operations that would change it
+// shown, the requests it answers, the operations that would change it, why,
+// and, revising it, what that changed; empty when it doesn't say
 export interface _Payload_Proposal_ {
   document: _Id_Document_;
   base: _Version_Document_;
   answers: Array<_Id_Request_>;
   operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
+  rationale: string;
+  changes: string;
 }
 
 export interface _Shown_Document_ {
@@ -147,6 +153,7 @@ const activate: _ACTIVATE_Transition__Task_ = (task, activated) => ({
   applied: [],
   reviews: [],
   submissions: [],
+  summaries: [],
 });
 
 const stated = (text: string): _Reason_Task_ => ({ kind: "stated", text: { text, overlay: [] } });
@@ -180,6 +187,7 @@ const park: _PARK_Transition__Task_ = (task, parked) => ({
   applied: task.applied,
   reviews: task.reviews,
   submissions: task.submissions,
+  summaries: task.summaries,
   proposals: task.proposals,
   parked,
   was: task.state,
@@ -198,6 +206,7 @@ const complete: _COMPLETE_Transition__Task_ = (task, completed) => ({
   applied: task.applied,
   reviews: task.reviews,
   submissions: task.submissions,
+  summaries: task.summaries,
   proposals: task.proposals,
   completed,
 });
@@ -215,6 +224,7 @@ const cancel: _CANCEL_Transition__Task_ = (task, canceled, reason) => ({
   applied: task.applied,
   reviews: task.reviews,
   submissions: task.submissions,
+  summaries: task.summaries,
   proposals: closeProposals(task.proposals, canceled, reason),
   canceled,
   reason,
@@ -233,6 +243,7 @@ const resume: _RESUME_Transition__Task_ = (task, activated) => ({
   applied: task.applied,
   reviews: task.reviews,
   submissions: task.submissions,
+  summaries: task.summaries,
   proposals: task.proposals,
 });
 
@@ -249,8 +260,39 @@ export function agentsTurn(tasks: Array<_Task_Doctor_>): Array<_WORKING_Task__Do
     (task): task is _WORKING_Task__Doctor_ =>
       task.state === "working" &&
       (task.proposals.some((proposal) => proposal.state === "revising") ||
-        task.proposals.every((proposal) => proposal.state !== "proposed")),
+        task.proposals.every((proposal) => proposal.state !== "proposed") ||
+        newRequests(task).length > 0),
   );
+}
+
+// the requests made since the agent last handed the task over, steering it;
+// none before it ever has, as it's at work on all of them
+export function newRequests(task: _Task_Doctor_): Array<_Request_Task_> {
+  if (task.state !== "working" && task.state !== "reviewing") return [];
+  if (task.submissions.length === 0) return [];
+  return latestBrief(task).requests.filter((request) => progressOf(task, request) === "in progress");
+}
+
+// A request added to the active task steers it: its brief's next version,
+// with the request added; one in review goes back to working, as the agent
+// has something new to answer while what's proposed waits for review.
+export function steer(
+  place: _Place_Tasks_,
+  id: _Id_Task_,
+  text: _Text_Doctor_,
+  targets: Array<_Target_Request_>,
+): Promise<_Outcome_Task_<_Id_Request_>> {
+  return updateTask(place, id, async (task) => {
+    if (!isActive(task)) return refuse(`task ${id} is ${task.state}, so it can't take a request`);
+    const latest = latestBrief(task);
+    const request = requestOf(text, targets, stamp("human"));
+    const requests: _NonEmpty_<_Request_Task_> = [...latest.requests, request];
+    const versions: _NonEmpty_<_Version_Brief_> = [
+      ...task.brief.versions,
+      { number: parseOwn(numberBriefSchema, latest.number + 1), written: request.made, requests },
+    ];
+    return done({ task: { ...task, state: "working", brief: { versions } }, value: request.id });
+  });
 }
 
 // A task in review completes once everything proposed for it is decided:
@@ -467,16 +509,20 @@ export function propose(
       id: mintId(changeIdSchema, randomBytes(10)),
     });
     if (tried.kind === "refused") return refuse(`the operations don't apply to the version they were made from: ${tried.issue}`);
+    const revising = task.proposals.find(
+      (each): each is _REVISING_Proposal__Task_ => each.state === "revising" && each.document === payload.document,
+    );
+    // why it's this change, as the round before had it unless it's said again
+    const before = revising?.rounds[revising.rounds.length - 1]?.version.rationale ?? { text: "", overlay: [] };
     const version: _Version_Proposal_ = {
       written: stamp(author),
       base: payload.base,
       answering: latest.number,
       answers: payload.answers,
       operations: payload.operations,
+      rationale: payload.rationale.trim() === "" ? before : { text: payload.rationale.trim(), overlay: [] },
+      changes: { text: revising === undefined ? "" : payload.changes.trim(), overlay: [] },
     };
-    const revising = task.proposals.find(
-      (each): each is _REVISING_Proposal__Task_ => each.state === "revising" && each.document === payload.document,
-    );
     const proposal: _PROPOSED_Proposal__Task_ =
       revising === undefined
         ? {
@@ -498,6 +544,7 @@ export function propose(
 export function submit(
   place: _Place_Tasks_,
   id: _Id_Task_,
+  summary: { text: string; headline: string },
   note: string,
 ): Promise<_Outcome_Task_<{ state: _Task_Doctor_["state"]; issues: Array<string> }>> {
   return updateTask(place, id, async (task) => {
@@ -507,9 +554,44 @@ export function submit(
       return refuse(`proposal ${revising.join(", ")} was sent back for changes: revise it with doctor propose, then submit`);
     }
     const now = stamp("agent");
-    const submission = { submitted: now, note: { text: note, overlay: [] } };
-    const submitted = await settle(place, { ...task, state: "reviewing", submissions: [...task.submissions, submission] }, now);
+    const submission = { submitted: now, note: { text: note, overlay: [] }, answering: latestBrief(task).number };
+    // where the task stands as a whole, only when it says so; a note on one
+    // hand-over is about a round, so it's kept with the hand-over alone
+    const summaries = summary.text === "" ? task.summaries : summarized(task.summaries, { kind: "task" }, summary, now);
+    const submitted = await settle(place, { ...task, state: "reviewing", submissions: [...task.submissions, submission], summaries }, now);
     return done({ task: submitted.task, value: { state: submitted.task.state, issues: submitted.issues } });
+  });
+}
+
+// a task's summaries with the one about what's given rewritten, its
+// headline with it
+function summarized(
+  summaries: Array<_Summary_Task_>,
+  about: _About_Summary_,
+  said: { text: string; headline: string },
+  written: _Stamp_Doctor_,
+): Array<_Summary_Task_> {
+  const same = (other: _About_Summary_) => (other.kind === "task" ? about.kind === "task" : about.kind === "document" && other.document === about.document);
+  const summary = { about, written, text: { text: said.text, overlay: [] }, headline: { text: said.headline, overlay: [] } };
+  return [...summaries.filter((each) => !same(each.about)), summary];
+}
+
+// The agent's view of where the active task stands, as a whole or in one of
+// the workspace's documents, rewritten whenever it changes, not only on
+// handing the task over.
+export function summarize(
+  place: _Place_Tasks_,
+  id: _Id_Task_,
+  about: _About_Summary_,
+  text: string,
+  headline: string,
+): Promise<_Outcome_Task_<_Id_Task_>> {
+  return updateTask(place, id, async (task) => {
+    if (!isActive(task)) return refuse(`task ${id} is ${task.state}, so it takes no summary`);
+    if (text.trim() === "") return refuse("a summary says where things stand");
+    if (about.kind === "document" && place.fileOf(about.document).length === 0) return refuse(`there's no document ${about.document} in the workspace`);
+    const said = { text: text.trim(), headline: headline.trim() };
+    return done({ task: { ...task, summaries: summarized(task.summaries, about, said, stamp("agent")) }, value: task.id });
   });
 }
 
@@ -735,7 +817,10 @@ export function editProposal(
     });
     if (tried.kind === "refused") return refuse(`the edit doesn't apply to the version the proposal was made from: ${tried.issue}`);
     const earlier = proposal.rounds.slice(0, -1).filter(isPast);
-    const yours: _STANDING_Round__Proposal_ = { kind: "standing", version: { ...last.version, written: stamp("human"), operations } };
+    const yours: _STANDING_Round__Proposal_ = {
+      kind: "standing",
+      version: { ...last.version, written: stamp("human"), operations, changes: { text: "", overlay: [] } },
+    };
     const rounds: [...Array<_Past_Round__Proposal_>, _STANDING_Round__Proposal_] =
       last.version.written.by === "human" ? [...earlier, yours] : [...earlier, { kind: "edited", version: last.version }, yours];
     const edited: _PROPOSED_Proposal__Task_ | _ACCEPTED_Proposal__Task_ = { ...proposal, rounds };

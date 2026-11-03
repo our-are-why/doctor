@@ -15,6 +15,13 @@
   z-index: 100;
 }
 
+/* its two parts, the task and the document, a hairline between them */
+.part + .part {
+  border-top: 1px solid color-mix(in srgb, var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground)) 14%, transparent);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
 .head {
   align-items: baseline;
   display: flex;
@@ -28,19 +35,77 @@
 
 .state,
 .heading,
-.aim,
-.facts dt {
+.aim {
   color: var(--vscode-descriptionForeground);
 }
 
 .heading {
   font-size: 0.85em;
-  margin: 10px 0 4px;
+  margin: 0 0 4px;
 }
 
 .requests {
-  margin: 0;
+  margin: 4px 0 0;
   padding-left: 1.1rem;
+}
+
+/* where the task stands, in a line, or said only in full, cut at three,
+   whole when hovered */
+.summary {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  display: -webkit-box;
+  margin: 6px 0 0;
+  overflow: hidden;
+}
+
+/* a task never summarized, by what it's called, its first request's words */
+.named {
+  color: var(--vscode-descriptionForeground);
+  -webkit-line-clamp: 2;
+}
+
+/* where a request is: in progress, or addressed */
+.progress {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+/* the requests aimed at the document, folded till they're opened */
+.asked {
+  font-size: 0.9em;
+  margin: 6px 0 0;
+}
+
+/* its arrow after its words, as Amend's is: down while it's folded, up
+   once it's open, in place of the browser's own before them */
+.asked > summary {
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  list-style: none;
+}
+
+.asked > summary::-webkit-details-marker {
+  display: none;
+}
+
+.asked > summary::after {
+  content: "▾";
+  display: inline-block;
+  font-size: 1.25em;
+  line-height: 0;
+  margin-left: 0.35em;
+}
+
+.asked[open] > summary::after {
+  content: "▴";
+}
+
+/* hovered, underlined, as the card's links are, still muted, not read as
+   what it holds */
+.asked > summary:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .requests li + li {
@@ -52,13 +117,167 @@
   white-space: pre-wrap;
 }
 
-.facts {
-  display: grid;
-  gap: 2px 12px;
-  grid-template-columns: auto 1fr;
+/* a section's footer: links in the card's own lower-case words, side by
+   side, wrapping as the card narrows */
+.footer {
   margin: 10px 0 0;
 }
 
-.facts dd {
-  margin: 0;
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.action {
+  background: none;
+  border: none;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9em;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.action:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* the form for a request about the document, as every request form is: a
+   purple bar beside it over a band of its own, its field purple when it
+   has the focus */
+/* with the form open at its bottom, square there, so the form's purple bar
+   runs straight down to its edge */
+.composing {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.composer {
+  background: color-mix(in srgb, var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground)) 6%, var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background)));
+  box-shadow: inset 3px 0 0 var(--vscode-charts-purple, #b180d7);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* out over the card's border to its edges and down to its bottom, the
+     last thing in it, its contents where they'd be inside the border */
+  margin: 10px -13px -11px;
+  padding: 8px 13px 11px 16px;
+}
+
+/* an action's arrow, when it opens something under it, as Amend's: a touch
+   bigger than its words, purple while what it opens is open */
+.opens {
+  display: inline-block;
+  font-size: 1.25em;
+  line-height: 0;
+  margin-left: 0.3em;
+}
+
+.opened {
+  color: var(--vscode-charts-purple, #b180d7);
+}
+
+.composeInput {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  box-sizing: border-box;
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  outline: none;
+  padding: 4px 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.composeInput:focus {
+  border-color: var(--vscode-charts-purple, #b180d7);
+}
+
+.composeRow {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.composeHint {
+  color: var(--vscode-descriptionForeground);
+  flex: 1;
+  font-size: 0.85em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* its buttons, as the other request forms' are: cancel secondary, adding it
+   the theme's own */
+.composeAdd,
+.composeCancel {
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9em;
+  padding: 0.1rem 0.6rem;
+}
+
+.composeAdd {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.composeCancel {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+/* figures side by side, each under its muted label, in the text's own
+   colour */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin: 8px 0 0;
+}
+
+/* first in its part, at its top; what follows, a little apart */
+.part > .stats:first-child {
+  margin-top: 0;
+}
+
+.stats + .heading,
+.head + .heading {
+  margin-top: 8px;
+}
+
+/* under its label, as close as a heading's text is */
+.heading + .summary {
+  margin-top: 0;
+}
+
+/* its figure as far under its label as a heading's text is under it */
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.statLabel {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.figure {
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+}
+
+/* its proposals and when it started and finished, on a line */
+.facts {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  margin: 6px 0 0;
 }

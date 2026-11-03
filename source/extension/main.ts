@@ -14,7 +14,7 @@ import type {
   _Target_Request_,
   _Task_Doctor_,
 } from "../shared/domain.next.ts";
-import { latestBrief, nameOf } from "../shared/brief.ts";
+import { latestBrief, nameOf, progressOf, proposalsFor } from "../shared/brief.ts";
 import { parse, parseOwn } from "../shared/parse.ts";
 import { taskIdSchema } from "../shared/schema.ts";
 import {
@@ -32,6 +32,8 @@ import {
   type _Amendment_Review_,
   type _Open_Proposal_,
   type _REVIEW_Message__Client_,
+  type _ACCEPTALL_Message__Client_,
+  type _STEER_Message__Client_,
   type _TASK_Message__Client_,
   type _Token_Endpoint_,
 } from "../shared/protocol.ts";
@@ -60,6 +62,7 @@ import {
   editProposal,
   reopen,
   requestChanges,
+  steer,
   whenMerged,
   type _Place_Tasks_,
 } from "./tasks.ts";
@@ -246,6 +249,8 @@ async function openProposals(tasks: Array<_Task_Doctor_>, file: string): Promise
         state: applied.length > 0 ? "applied" : proposal.state,
         rounds: proposal.rounds.length,
         written: version.written.by,
+        rationale: version.rationale.text,
+        changes: version.changes.text,
         feedback: feedbackOf(proposal),
         changed,
         amendments: amendmentsOf(proposal),
@@ -309,7 +314,13 @@ function statusOf(tasks: Array<_Task_Doctor_>): Array<_Task_Status_> {
         state: task.state,
         turn: agents.includes(task.id) ? "agent" : "human",
         agent: presence(),
-        requests: latestBrief(task).requests.map((request) => ({ text: request.text.text, targets: request.targets.map(describeAim) })),
+        requests: latestBrief(task).requests.map((request) => ({
+          text: request.text.text,
+          targets: request.targets.map(describeAim),
+          aimed: request.targets,
+          progress: progressOf(task, request),
+          proposals: proposalsFor(task, request).length,
+        })),
         proposals: {
           proposed: count("proposed"),
           revising: count("revising"),
@@ -320,7 +331,13 @@ function statusOf(tasks: Array<_Task_Doctor_>): Array<_Task_Status_> {
         started: task.activated.at,
         finished: finishedAt(task).map((stamp) => ({ at: stamp.at, by: stamp.by })),
         reason: task.state === "canceled" && task.reason.kind === "stated" ? task.reason.text.text : "",
-        note: task.submissions.findLast((submission) => submission.note.text !== "")?.note.text ?? "",
+        summary: task.summaries.find((summary) => summary.about.kind === "task")?.text.text ?? "",
+        headline: task.summaries.find((summary) => summary.about.kind === "task")?.headline.text ?? "",
+        summaries: task.summaries.flatMap((summary) =>
+          summary.about.kind === "document"
+            ? [{ document: summary.about.document, summary: summary.text.text, headline: summary.headline.text }]
+            : [],
+        ),
       },
     ];
   });
@@ -371,6 +388,50 @@ async function makeTask(message: _TASK_Message__Client_, send: _Send_Session_): 
   const made = await createTask(place, { text: message.text, overlay: [] }, message.targets);
   tellParked(made);
   await announce([], [send]);
+}
+
+// Every proposal waiting for review accepted, in a document or the whole
+// task, but those being amended. Accepting them all can complete the task,
+// applying it to its documents, so that's asked first.
+async function acceptAll(message: _ACCEPTALL_Message__Client_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const read = await readTask(place, message.task);
+  if (read.kind === "rejected") return announce(read.issues, [send]);
+  const task = read.value;
+  if (task.state !== "working" && task.state !== "reviewing") return announce([`task ${task.id} is ${task.state}, so there's nothing to accept`], [send]);
+  const waiting = task.proposals.filter(
+    (proposal) =>
+      proposal.state === "proposed" &&
+      (message.document.length === 0 || message.document.includes(proposal.document)) &&
+      !message.except.includes(proposal.id),
+  );
+  if (waiting.length === 0) return announce([], [send]);
+  const left = task.proposals.filter((proposal) => (proposal.state === "proposed" && !waiting.includes(proposal)) || proposal.state === "revising");
+  if (task.state === "reviewing" && left.length === 0) {
+    const sure = await vscode.window.showWarningMessage(
+      `Accept all ${waiting.length} proposals? That decides everything in ${task.id}, so it completes and applies what's accepted to its documents.`,
+      { modal: true },
+      "Accept all",
+    );
+    if (sure !== "Accept all") return;
+  }
+  const issues: Array<string> = [];
+  for (const proposal of waiting) {
+    const outcome = await accept(place, task.id, proposal.id);
+    issues.push(...(outcome.kind === "refused" ? outcome.issues : outcome.value.issues));
+  }
+  return announce(issues, [send]);
+}
+
+// a request added to the active task, for the agent to take up
+async function steerTask(message: _STEER_Message__Client_, send: _Send_Session_): Promise<void> {
+  const [place] = tasksPlace();
+  if (place === undefined) return;
+  const unknown = unknownIn(message.targets);
+  if (unknown.length > 0) return announce([`there's no document ${unknown.join(", ")} in the workspace`], [send]);
+  const outcome = await steer(place, message.task, { text: message.text, overlay: [] }, message.targets);
+  return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
 }
 
 // says which task was parked to make another active, once it's done
@@ -588,6 +649,9 @@ const connect: _Connect_Endpoint_ = (caller, send) => {
         case "task":
           if (caller === "human") void makeTask(message, send);
           return;
+        case "steer":
+          if (caller === "human") void steerTask(message, send);
+          return;
         case "review":
           if (caller === "human") void reviewProposal(message, send);
           return;
@@ -606,6 +670,9 @@ const connect: _Connect_Endpoint_ = (caller, send) => {
           return;
         case "cancel":
           if (caller === "human") void dropTask(message.task, send);
+          return;
+        case "acceptAll":
+          if (caller === "human") void acceptAll(message, send);
           return;
         case "drafting":
           if (caller === "human") {

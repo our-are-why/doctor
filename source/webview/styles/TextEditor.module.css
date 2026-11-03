@@ -852,6 +852,29 @@
 
 /* which round a proposal's on, once it's back from revising, and what you
    asked; or that it was rejected, and why */
+/* what a proposal says, left of its actions: why it's this change, and
+   where it is beneath, each cut short, whole when hovered */
+.proposalTold {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+.proposalWhy {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proposalStatus {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
 .proposalRound {
   color: var(--vscode-descriptionForeground);
   flex: 1;

@@ -442,6 +442,7 @@ interface __ACTIVATED_Task__Doctor_<
   applied: Array<_Ref_Change_>;
   reviews: Array<_Review_Change_>;
   submissions: Array<_Submission_Task_>;
+  summaries: Array<_Summary_Task_>;
 }
 
 // Each time the agent handed the task over, and what it said in doing so:
@@ -449,6 +450,31 @@ interface __ACTIVATED_Task__Doctor_<
 export interface _Submission_Task_ {
   submitted: _Stamp_Doctor_;
   note: _Text_Doctor_;
+  // the version of the brief it answered, so a request made since is new
+  answering: _Number_Brief_;
+}
+
+// The agent's view of where the task stands, as a whole or in one of its
+// documents, as it last wrote it: rewritten as its view changes, so there's
+// one of each at most.
+export interface _Summary_Task_ {
+  about: _About_Summary_;
+  written: _Stamp_Doctor_;
+  text: _Text_Doctor_;
+  // the same in a line, where it stands at a glance; empty when unsaid
+  headline: _Text_Doctor_;
+}
+
+export type _About_Summary_ = _TASK_About__Summary_ | _DOCUMENT_About__Summary_;
+
+interface __BASE_About__Summary_<__AboutKind__ extends string> {
+  kind: __AboutKind__;
+}
+
+export interface _TASK_About__Summary_ extends __BASE_About__Summary_<"task"> {}
+
+export interface _DOCUMENT_About__Summary_ extends __BASE_About__Summary_<"document"> {
+  document: _Id_Document_;
 }
 
 export interface _DRAFT_Task__Doctor_ extends __BASE_Task__Doctor_<"draft"> {}
@@ -621,6 +647,12 @@ export interface _Version_Proposal_ {
   // the requests it answers, of the brief version it answers
   answers: Array<_Id_Request_>;
   operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
+  // why it's this change, as its writer sees it, carried on from the round
+  // before when a revision doesn't say it again; empty when it's unsaid
+  rationale: _Text_Doctor_;
+  // what this round changed from the round before; empty for a first round,
+  // and when it's unsaid
+  changes: _Text_Doctor_;
 }
 
 // What's asked of a proposal sent back: what should change in it, and

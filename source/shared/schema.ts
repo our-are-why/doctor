@@ -49,6 +49,7 @@ import type {
   _Target_Request_,
   _Task_Doctor_,
   _Submission_Task_,
+  _Summary_Task_,
   _Text_Doctor_,
   _Time_Doctor_,
   _Url_Target_,
@@ -434,6 +435,9 @@ const proposalVersionSchema: v.GenericSchema<unknown, _Version_Proposal_> = v.st
   answering: numberBriefSchema,
   answers: v.optional(v.array(requestIdSchema), () => []),
   operations: proposalOperationsSchema,
+  // versions written before they said why, or what changed, say neither
+  rationale: v.optional(textSchema, () => ({ text: "", overlay: [] })),
+  changes: v.optional(textSchema, () => ({ text: "", overlay: [] })),
 });
 
 const standingSchema: v.GenericSchema<unknown, _STANDING_Round__Proposal_> = v.strictObject({
@@ -551,6 +555,15 @@ const taskBase = {
 const submissionSchema: v.GenericSchema<unknown, _Submission_Task_> = v.strictObject({
   submitted: stampSchema,
   note: textSchema,
+  // hand-overs from before a brief could be steered answered its only version
+  answering: v.optional(numberBriefSchema, () => parseOwn(numberBriefSchema, 1)),
+});
+
+const summarySchema: v.GenericSchema<unknown, _Summary_Task_> = v.strictObject({
+  about: v.variant("kind", [v.strictObject({ kind: v.literal("task") }), v.strictObject({ kind: v.literal("document"), document: documentIdSchema })]),
+  written: stampSchema,
+  text: textSchema,
+  headline: v.optional(textSchema, () => ({ text: "", overlay: [] })),
 });
 
 const activated = {
@@ -559,6 +572,8 @@ const activated = {
   reviews: v.array(reviewSchema),
   // tasks handed over before what was said in doing so was kept have none
   submissions: v.optional(v.array(submissionSchema), (): Array<_Submission_Task_> => []),
+  // tasks the agent never summarized have no summaries
+  summaries: v.optional(v.array(summarySchema), (): Array<_Summary_Task_> => []),
 };
 
 export const taskSchema: v.GenericSchema<unknown, _Task_Doctor_> = v.variant("state", [

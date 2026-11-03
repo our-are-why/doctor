@@ -1,5 +1,22 @@
 import { readFile } from "node:fs/promises";
 
+// a command's arguments: the value after each flag it knows, and the rest
+function flagsOf(given: Array<string>, known: Array<string>): { flags: Map<string, Array<string>>; rest: Array<string> } {
+  const flags = new Map<string, Array<string>>();
+  const rest: Array<string> = [];
+  for (let at = 0; at < given.length; at += 1) {
+    const each = given[at] ?? "";
+    const value = given[at + 1];
+    if (known.includes(each) && value !== undefined) {
+      flags.set(each, [value]);
+      at += 1;
+    } else {
+      rest.push(each);
+    }
+  }
+  return { flags, rest };
+}
+
 const usage = `doctor: the agent's side of doctor's tasks
 
 Working on doctor's tasks is a loop: run doctor wait, take the step its "next"
@@ -34,14 +51,31 @@ and comes back to you if any is sent back for changes.
                            id, the active task's first targeted document
   doctor propose <file>    propose changes; the file, or - for standard input, holds
                              { "document": <id>, "base": <version>,
-                               "answers": [<request id>, ...], "operations": [...] }
-                           where base is the version you read the document at, and
-                           answers names the requests the proposal answers
-  doctor submit [--note <text>]
+                               "answers": [<request id>, ...], "operations": [...],
+                               "rationale": <text>, "changes": <text> }
+                           where base is the version you read the document at,
+                           answers names the requests the proposal answers,
+                           rationale says why it's this change, and, revising a
+                           proposal, changes says what this round changed; a
+                           revision without a rationale keeps the one before
+  doctor summarize [--document <id>] [--headline <line>] <text>
+                           say where the active task stands, as a whole, or in one
+                           document: what changes there, as its effect on the
+                           document, not a list of the proposals, which show
+                           themselves. Each replaces the last of
+                           its kind, so say it as it is now, not as news. The
+                           headline says it in one short line, shown where there's
+                           room for little more: what the work does or means, not
+                           counts or states, which doctor shows beside it
+  doctor submit [--summary <text> [--headline <line>] | --note <text>]
                            hand the active task over for review, once you've proposed
                            everything it needs; with nothing left to review, it
-                           completes. The note, shown with the task, says what you
-                           did, or why nothing needed changing
+                           completes. The summary, shown with the task, says where
+                           it stands as a whole: what it does, or why nothing needed
+                           changing; give it the first time, and again only when that
+                           picture changes. What a revision did goes in its proposal's
+                           "changes", not here. A note is a word on this hand-over
+                           alone, kept with it, never shown as the summary
 
 Everything is JSON. When doctor refuses something, it answers { "issues": [...] }
 and the command exits 1.
@@ -186,13 +220,28 @@ async function run(args: Array<string>): Promise<number> {
       return payload === undefined ? 1 : call("POST", "propose", payload);
     }
     case "submit": {
-      const [flag, note] = args.slice(1);
-      if (flag === undefined) return call("POST", "submit", undefined);
-      if (flag !== "--note" || note === undefined || note.trim() === "") {
-        console.log(JSON.stringify({ issues: ["doctor submit takes --note <text>, or nothing"] }));
+      const { flags, rest } = flagsOf(args.slice(1), ["--summary", "--note", "--headline"]);
+      const [summary] = flags.get("--summary") ?? [];
+      const [note] = flags.get("--note") ?? [];
+      const [headline = ""] = flags.get("--headline") ?? [];
+      if (rest.length > 0 || (summary === undefined && note === undefined && flags.size > 0) || (summary !== undefined && note !== undefined)) {
+        console.log(JSON.stringify({ issues: ["doctor submit takes --summary <text> with --headline <line> if you like, --note <text>, or nothing"] }));
         return 1;
       }
-      return call("POST", "submit", { note });
+      if (summary !== undefined) return call("POST", "submit", { summary, headline });
+      if (note !== undefined) return call("POST", "submit", { note });
+      return call("POST", "submit", undefined);
+    }
+    case "summarize": {
+      const { flags, rest } = flagsOf(args.slice(1), ["--document", "--headline"]);
+      const [summary] = rest;
+      const [document] = flags.get("--document") ?? [];
+      const [headline = ""] = flags.get("--headline") ?? [];
+      if (summary === undefined || summary.trim() === "" || rest.length > 1) {
+        console.log(JSON.stringify({ issues: ["doctor summarize takes a summary, with --document <id> for a document's, and --headline <line> if you like"] }));
+        return 1;
+      }
+      return call("POST", "summarize", document === undefined ? { summary, headline } : { document, summary, headline });
     }
     case "help":
     case undefined:

@@ -6,7 +6,7 @@ import { reconcile } from "../shared/reconcile.ts";
 import { nodeIdSchema } from "../shared/schema.ts";
 import { waiting } from "./session.ts";
 import styles from "./styles/TextEditor.module.css";
-import { describeProposals, TaskCard } from "./TaskCard.tsx";
+import { describeProposals, TaskCard, type _Offer_Card_ } from "./TaskCard.tsx";
 import { createTextView, type _View_Text_ } from "./textView.ts";
 import { useSession } from "./useSession.ts";
 
@@ -49,6 +49,9 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
       makeTask: (targets, text) => latest.current.makeTask(targets, text),
       beginDrafting: () => latest.current.beginDrafting(),
       addRequest: (targets, text) => latest.current.addRequest(targets, text),
+      steer: (targets, text) => {
+        for (const status of latest.current.status) latest.current.steer(status.task, targets, text);
+      },
       stopDrafting: () => latest.current.stopDrafting(),
       review: (task, proposal, verdict) => latest.current.review(task, proposal, verdict),
       numbers: (left) => setNumbers([left]),
@@ -104,6 +107,24 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
   const { load, problems, openProblems, connection } = session;
   const issues = [...(load.kind === "unreadable" ? load.issues : []), ...problems, ...openProblems];
   const reviews = session.open.filter((each) => each.state === "proposed").length;
+  // the document shown, for the task's card, and the proposals on it
+  const count = (state: string) => session.open.filter((each) => each.state === state).length;
+  const shownHere =
+    session.load.kind === "editing"
+      ? [
+          {
+            id: session.load.document.id,
+            content: session.load.document,
+            proposals: {
+              proposed: count("proposed"),
+              revising: count("revising"),
+              accepted: count("accepted") + count("applied"),
+              rejected: count("rejected"),
+              withdrawn: 0,
+            },
+          },
+        ]
+      : [];
   const [task] = session.status;
   const [numbersLeft] = numbers;
   const copyPrompt = () => {
@@ -115,8 +136,11 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
     for (const timer of hiding.current) window.clearTimeout(timer);
     hiding.current = [];
   };
+  // a card with a request being written in it stays put
+  const pinned = useRef<"pinned" | "free">("free");
   const hideCard = () => {
     keepCard();
+    if (pinned.current === "pinned") return;
     hiding.current = [window.setTimeout(() => setCard([]), 200)];
   };
   const showCard = (event: MouseEvent) => {
@@ -213,6 +237,51 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
       </span>
     );
   };
+  // The active task's actions, for its card's footers: the task's, its
+  // proposals waiting for review accepted, but those being amended, and it
+  // parked or canceled; this document's, a request about it added to the
+  // task, and its waiting proposals accepted. Each closes the card.
+  const active = task !== undefined && (task.state === "working" || task.state === "reviewing");
+  const cardActions = (): { task: Array<_Offer_Card_>; document: Array<_Offer_Card_> } => {
+    if (task === undefined || !active) return { task: [], document: [] };
+    const amending = views.current.flatMap((view) => view.amending());
+    const here = session.open.filter((each) => each.state === "proposed" && !amending.includes(each.proposal)).length;
+    // the task's, here and elsewhere, but those being amended here
+    const everywhere = task.proposals.proposed - session.open.filter((each) => each.state === "proposed" && amending.includes(each.proposal)).length;
+    const document = session.load.kind === "editing" ? [session.load.document.id] : [];
+    const closing = (run: () => void) => () => {
+      setCard([]);
+      run();
+    };
+    return {
+      task: [
+        ...(everywhere > 0
+          ? [
+              {
+                label: `accept proposals (${everywhere})`,
+                title: "Accept every proposal in this task waiting for review",
+                run: closing(() => session.acceptAll(task.task, [], amending)),
+                opens: [],
+              },
+            ]
+          : []),
+        { label: "park", title: "Put this task aside, to make active again from the dashboard", run: closing(() => session.park(task.task)), opens: [] },
+        { label: "cancel", title: "Cancel this task, saying why if you like", run: closing(() => session.cancel(task.task)), opens: [] },
+      ],
+      document: [
+        ...(here > 0
+          ? [
+              {
+                label: `accept proposals (${here})`,
+                title: "Accept every proposal in this document waiting for review",
+                run: closing(() => session.acceptAll(task.task, document, amending)),
+                opens: [],
+              },
+            ]
+          : []),
+      ],
+    };
+  };
   // Each part is keyed: the bar and the editor's host are both divs, which
   // Preact could mix up, and the editor draws into two of them.
   return (
@@ -284,7 +353,35 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
       ) : null}
       {task === undefined
         ? null
-        : card.map((place) => <TaskCard key="card" status={task} left={place.left} top={place.top} onEnter={keepCard} onLeave={hideCard} />)}
+        : card.map((place) => (
+            <TaskCard
+              key="card"
+              status={task}
+              document={shownHere}
+              actions={cardActions()}
+              compose={
+                active && session.load.kind === "editing"
+                  ? [
+                      {
+                        add: (text) => {
+                          for (const status of session.status) {
+                            if (session.load.kind === "editing") session.steer(status.task, [{ kind: "document", document: session.load.document.id }], text);
+                          }
+                        },
+                        pin: (how) => {
+                          pinned.current = how;
+                          keepCard();
+                        },
+                      },
+                    ]
+                  : []
+              }
+              left={place.left}
+              top={place.top}
+              onEnter={keepCard}
+              onLeave={hideCard}
+            />
+          ))}
       <div key="dock" ref={dock} className={styles.dock} />
       <div key="host" ref={host} className={styles.host} />
     </main>

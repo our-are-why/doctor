@@ -51,6 +51,8 @@ export interface _Hooks_View_ {
   beginDrafting: () => void;
   addRequest: (targets: Array<_Target_Request_>, text: string) => void;
   stopDrafting: () => void;
+  // steering: a request added to the active task
+  steer: (targets: Array<_Target_Request_>, text: string) => void;
   review: (task: _Id_Task_, proposal: _Id_Proposal_, verdict: _Verdict_Review_) => void;
   // where the line numbers start, from the editor's left, for the bar above
   // to start its words there too
@@ -70,11 +72,15 @@ export interface _View_Text_ {
   requestForDocument: (route: _Route_Form_) => void;
   // scrolls to the first proposal waiting for review
   revealProposals: () => void;
+  // the proposals being amended, with amendments drafted or a form of theirs
+  // open, which accepting them all leaves as they are
+  amending: () => Array<_Id_Proposal_>;
   dispose: () => void;
 }
 
-// what the request form does with what's written in it
-export type _Route_Form_ = "quick" | "draft";
+// what the request form does with what's written in it: starts a task with
+// it, adds it to the draft, or adds it to the active task, steering it
+export type _Route_Form_ = "quick" | "draft" | "steer";
 
 // a request form open: which, what's written in it, and how to go to it or
 // close it
@@ -833,6 +839,8 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // another closes the one open, unless something's written in it, when
   // it's kept, and gone to, instead.
   let formOpen: Array<_Open_Form_> = [];
+  // the proposal the inline amendment form's open on, if it is
+  let amendingInline: Array<_Id_Proposal_> = [];
   const makeRoom = (key: string): "room" | "kept" => {
     const [open] = formOpen;
     if (open === undefined || open.key === key) return "room";
@@ -1428,10 +1436,24 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
                   ? "revising"
                   : `revising${said}`
                 : item.rounds > 1
-                  ? `round ${item.rounds}${item.written === "human" ? " · your edit" : ""}${item.before.length > 0 ? " · underlined: changed since the round before" : ""}${said}`
+                  ? `round ${item.rounds}${said}${item.written === "human" ? " · your edit" : item.changes === "" ? "" : ` · ${item.changes}`}${item.before.length > 0 ? " · changes underlined" : ""}`
                   : "";
-      if (item.state === "revising") row.append(element("span", styles.spinner, ""));
-      row.append(element("span", styles.proposalRound, about));
+      // What it says, left of its actions: why it's this change, as its writer
+      // sees it, and where it is, each a line of its own, cut short, whole
+      // when hovered.
+      const told = element("div", styles.proposalTold, "");
+      if (item.rationale !== "") {
+        const why = element("span", styles.proposalWhy, item.rationale);
+        why.title = item.rationale;
+        told.append(why);
+      }
+      const status = element("div", styles.proposalStatus, "");
+      if (item.state === "revising") status.append(element("span", styles.spinner, ""));
+      const where = element("span", styles.proposalRound, about);
+      where.title = about;
+      status.append(where);
+      told.append(status);
+      row.append(told);
       // Request changes opens the form under its bar: its batched changes, each
       // its words and note, and what should change in the whole of it
       const request = element("button", styles.proposalButton, "");
@@ -1780,6 +1802,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     };
     const closeChange = () => {
       releaseForm("change");
+      amendingInline = [];
       const [open] = changing;
       changing = [];
       changeBox.remove();
@@ -1840,6 +1863,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       if (makeRoom("change") === "kept") return;
       closeChange();
       holdForm({ key: "change", written: () => changeInput.value, focus: () => changeInput.focus({ preventScroll: true }), close: closeChange });
+      amendingInline = [item.proposal];
       changing = [{ item, host, found, route }];
       markAmending(item.proposal);
       for (const each of marking) for (const range of ranges) each.writing.add(range);
@@ -2933,10 +2957,15 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const targets: Array<_Target_Request_> = picked === undefined ? [{ kind: "document", document: document.id }] : chosen;
     closeTask("replaced");
     holdForm({ key: "task", written: () => taskInput.value, focus: () => taskInput.focus({ preventScroll: true }), close: () => closeTask("away") });
-    makeButton.textContent = route === "quick" ? "Start task" : "Add to draft";
+    makeButton.textContent = route === "quick" ? "Start task" : route === "steer" ? "Add to task" : "Add to draft";
     // starting it parks the task active now, so it says so
     const parking = activeTask.map((task) => `, parking ${task}`).join("");
-    taskHint.textContent = route === "quick" ? `quick task, started now${parking}` : "added to the task you're drafting";
+    taskHint.textContent =
+      route === "quick"
+        ? `quick task, started now${parking}`
+        : route === "steer"
+          ? `added to ${activeTask.join("")}, for the agent to take up`
+          : "added to the task you're drafting";
     taskInput.placeholder = picked === undefined ? "What should change in this document?" : "What should change here?";
     taskBox.classList.remove(styles.taskInvalid);
     if (picked !== undefined) {
@@ -3009,6 +3038,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       return;
     }
     if (place.route === "draft") hooks.addRequest(place.targets, written);
+    else if (place.route === "steer") hooks.steer(place.targets, written);
     else hooks.makeTask(place.targets, written);
     taskInput.value = "";
     closeTask("back");
@@ -3251,6 +3281,10 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       activeTask = task;
     },
     requestForDocument: (route) => openTask(route, "document"),
+    amending: () =>
+      showing
+        .map((item) => item.proposal)
+        .filter((proposal) => (batches.get(proposal) ?? []).length > 0 || opened.has(proposal) || amendingInline.includes(proposal)),
     revealProposals: () => {
       const [line] = proposalAt;
       if (line !== undefined) editor.revealLineInCenter(Math.min(line + 1, model.getLineCount()));

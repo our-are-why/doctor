@@ -49,12 +49,14 @@ export type _Message_Client_ =
   | _OPEN_Message__Client_
   | _CHANGE_Message__Client_
   | _TASK_Message__Client_
+  | _STEER_Message__Client_
   | _REVIEW_Message__Client_
   | _WATCH_Message__Client_
   | _ACTIVATE_Message__Client_
   | _PARK_Message__Client_
   | _COMPLETE_Message__Client_
   | _CANCEL_Message__Client_
+  | _ACCEPTALL_Message__Client_
   | _DRAFTING_Message__Client_
   | _REQUEST_Message__Client_
   | _FORGET_Message__Client_
@@ -80,6 +82,13 @@ export interface _CHANGE_Message__Client_ extends __BASE_Message__Client_<"chang
 // a task to make, of one request: what's asked, and where it applies, if
 // anywhere in particular
 export interface _TASK_Message__Client_ extends __BASE_Message__Client_<"task"> {
+  text: string;
+  targets: Array<_Target_Request_>;
+}
+
+// a request added to the active task, steering it
+export interface _STEER_Message__Client_ extends __BASE_Message__Client_<"steer"> {
+  task: _Id_Task_;
   text: string;
   targets: Array<_Target_Request_>;
 }
@@ -188,6 +197,14 @@ export interface _CANCEL_Message__Client_ extends __BASE_Message__Client_<"cance
   task: _Id_Task_;
 }
 
+// every proposal waiting for review accepted at once, in a document, or,
+// with none named, in the whole task; but those being amended
+export interface _ACCEPTALL_Message__Client_ extends __BASE_Message__Client_<"acceptAll"> {
+  task: _Id_Task_;
+  document: Array<_Id_Document_>;
+  except: Array<_Id_Proposal_>;
+}
+
 const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kind", [
   v.strictObject({ kind: v.literal("accept") }),
   v.strictObject({ kind: v.literal("reject"), reason: v.string() }),
@@ -213,6 +230,7 @@ export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v
     text: requestTextSchema,
     targets: v.array(requestTargetSchema),
   }),
+  v.strictObject({ kind: v.literal("steer"), task: taskIdSchema, text: requestTextSchema, targets: v.array(requestTargetSchema) }),
   v.strictObject({ kind: v.literal("review"), task: taskIdSchema, proposal: proposalIdSchema, verdict: verdictSchema }),
   v.strictObject({ kind: v.literal("watch") }),
   v.strictObject({ kind: v.literal("activate"), task: taskIdSchema }),
@@ -227,6 +245,12 @@ export const clientMessageSchema: v.GenericSchema<unknown, _Message_Client_> = v
   v.strictObject({ kind: v.literal("park"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("complete"), task: taskIdSchema }),
   v.strictObject({ kind: v.literal("cancel"), task: taskIdSchema }),
+  v.strictObject({
+    kind: v.literal("acceptAll"),
+    task: taskIdSchema,
+    document: v.array(documentIdSchema),
+    except: v.array(proposalIdSchema),
+  }),
   v.strictObject({ kind: v.literal("open"), file: v.string() }),
   v.strictObject({
     kind: v.literal("change"),
@@ -299,6 +323,10 @@ export interface _Open_Proposal_ {
   rounds: number;
   // who wrote its last round: the agent, or you, editing it
   written: _Author_Doctor_;
+  // why it's this change, as its last round has it, and what that round
+  // changed; empty when unsaid
+  rationale: string;
+  changes: string;
   feedback: string;
   changed: Array<_Holder_Text_>;
   // the amendments last requested of it: what should change in the whole of
@@ -347,14 +375,24 @@ export interface _Task_Status_ {
   finished: Array<{ at: string; by: "human" | "agent" }>;
   // why it was canceled, when that was said
   reason: string;
-  // what the agent last said on handing it over, if it said anything
-  note: string;
+  // where the agent says it stands, as a whole, and in each document it
+  // summarized; never what it said of one hand-over, which is about a round;
+  // each in a line too, when it said that
+  summary: string;
+  headline: string;
+  summaries: Array<{ document: _Id_Document_; summary: string; headline: string }>;
 }
 
 // a request's words, and where it's aimed, described
 export interface _Request_Status_ {
   text: string;
   targets: Array<string>;
+  // where it's aimed, for a document to say in its own words; none when
+  // it's about every document
+  aimed: Array<_Target_Request_>;
+  // in progress, or addressed, and by how many proposals
+  progress: "in progress" | "addressed";
+  proposals: number;
 }
 
 // how many of the task's proposals are in each state
@@ -423,6 +461,8 @@ const openProposalSchema: v.GenericSchema<unknown, _Open_Proposal_> = v.strictOb
   state: v.picklist(["proposed", "revising", "accepted", "rejected", "applied"]),
   rounds: v.number(),
   written: v.picklist(["human", "agent"]),
+  rationale: v.string(),
+  changes: v.string(),
   feedback: v.string(),
   changed: v.array(holderSchema),
   amendments: v.array(v.strictObject({ words: v.string(), within: v.string(), at: v.number(), note: v.string() })),
@@ -453,7 +493,15 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
         state: v.picklist(["working", "reviewing", "completed", "canceled"]),
         turn: v.picklist(["agent", "human"]),
         agent: v.picklist(["waiting", "working", "away"]),
-        requests: v.array(v.strictObject({ text: v.string(), targets: v.array(v.string()) })),
+        requests: v.array(
+          v.strictObject({
+            text: v.string(),
+            targets: v.array(v.string()),
+            aimed: v.array(requestTargetSchema),
+            progress: v.picklist(["in progress", "addressed"]),
+            proposals: v.number(),
+          }),
+        ),
         proposals: v.strictObject({
           proposed: v.number(),
           revising: v.number(),
@@ -464,7 +512,9 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
         started: v.string(),
         finished: v.array(v.strictObject({ at: v.string(), by: v.picklist(["human", "agent"]) })),
         reason: v.string(),
-        note: v.string(),
+        summary: v.string(),
+        headline: v.string(),
+        summaries: v.array(v.strictObject({ document: documentIdSchema, summary: v.string(), headline: v.string() })),
       }),
     ),
   }),
@@ -495,7 +545,19 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
 ]);
 
 // what the agent says on handing a task over, if anything
-export const submitPayloadSchema = v.union([v.null(), v.strictObject({ note: v.string() })]);
+// handing the task over: with a summary of where it stands as a whole, or
+// a note on this hand-over alone, kept with it but never taken for one
+export const submitPayloadSchema = v.union([
+  v.null(),
+  v.strictObject({ summary: v.string(), headline: v.optional(v.string(), "") }),
+  v.strictObject({ note: v.string() }),
+]);
+
+// the agent's summary of where the task stands, or, naming one, a document
+export const summarizePayloadSchema = v.union([
+  v.strictObject({ summary: v.string(), headline: v.optional(v.string(), "") }),
+  v.strictObject({ document: documentIdSchema, summary: v.string(), headline: v.optional(v.string(), "") }),
+]);
 
 // what the agent proposes: which document, the version of it it was shown,
 // and the operations that would change it
@@ -504,6 +566,8 @@ export const proposalPayloadSchema = v.strictObject({
   base: versionSchema,
   answers: v.optional(v.array(requestIdSchema), () => []),
   operations: proposalOperationsSchema,
+  rationale: v.optional(v.string(), ""),
+  changes: v.optional(v.string(), ""),
 });
 
 export type _Config_Webview_ = _DOCUMENT_Config__Webview_ | _TEXT_Config__Webview_ | _DASHBOARD_Config__Webview_;
