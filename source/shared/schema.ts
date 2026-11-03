@@ -37,6 +37,8 @@ import type {
   _Ref_Change_,
   _Ref_Node_,
   _Request_Task_,
+  _EDITED_Round__Proposal_,
+  _Past_Round__Proposal_,
   _REQUESTED_Round__Proposal_,
   _Review_Change_,
   _Round_Proposal_,
@@ -439,6 +441,17 @@ const standingSchema: v.GenericSchema<unknown, _STANDING_Round__Proposal_> = v.s
   version: proposalVersionSchema,
 });
 
+// a passage noted before where its words start was kept is taken to be
+// their first place in the text they're in
+const passageSchema = v.pipe(
+  v.strictObject({ words: v.string(), within: v.string(), at: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))), note: textSchema }),
+  v.transform((passage) => {
+    const first = passage.within.indexOf(passage.words);
+    const at = passage.at ?? (first === -1 ? 0 : Array.from(passage.within.slice(0, first)).length);
+    return { words: passage.words, within: passage.within, at, note: passage.note };
+  }),
+);
+
 const requestedSchema: v.GenericSchema<unknown, _REQUESTED_Round__Proposal_> = v.strictObject({
   kind: v.literal("requested"),
   version: proposalVersionSchema,
@@ -446,30 +459,37 @@ const requestedSchema: v.GenericSchema<unknown, _REQUESTED_Round__Proposal_> = v
     made: stampSchema,
     feedback: textSchema,
     // requests made before they could note words of a proposal have none
-    passages: v.optional(v.array(v.strictObject({ words: v.string(), within: v.string(), note: textSchema })), () => []),
+    passages: v.optional(v.array(passageSchema), () => []),
   }),
+});
+
+const editedSchema: v.GenericSchema<unknown, _EDITED_Round__Proposal_> = v.strictObject({
+  kind: v.literal("edited"),
+  version: proposalVersionSchema,
 });
 
 const roundSchema: v.GenericSchema<unknown, _Round_Proposal_> = v.union([standingSchema, requestedSchema]);
 
-// every round but the last got a request for changes; what the last may be
-// depends on the proposal's state
+const pastSchema: v.GenericSchema<unknown, _Past_Round__Proposal_> = v.union([requestedSchema, editedSchema]);
+
+// every round but the last got a request for changes, or was edited by you;
+// what the last may be depends on the proposal's state
 function roundsSchema<__Last__ extends _Round_Proposal_>(
   lastSchema: v.GenericSchema<unknown, __Last__>,
-): v.GenericSchema<unknown, [...Array<_REQUESTED_Round__Proposal_>, __Last__]> {
+): v.GenericSchema<unknown, [...Array<_Past_Round__Proposal_>, __Last__]> {
   return v.pipe(
     v.custom<Array<unknown>>(
       (input) =>
         Array.isArray(input) &&
         input.length > 0 &&
-        input.slice(0, -1).every((round) => parse(requestedSchema, round).kind === "parsed") &&
+        input.slice(0, -1).every((round) => parse(pastSchema, round).kind === "parsed") &&
         parse(lastSchema, input.at(-1)).kind === "parsed",
-      "a proposal's rounds are its earlier requested ones, then its last",
+      "a proposal's rounds are its earlier requested or edited ones, then its last",
     ),
     // each round as its schema reads it, with what it fills in for what an
     // older round doesn't have
-    v.transform((input): [...Array<_REQUESTED_Round__Proposal_>, __Last__] => [
-      ...input.slice(0, -1).map((round) => parseOwn(requestedSchema, round)),
+    v.transform((input): [...Array<_Past_Round__Proposal_>, __Last__] => [
+      ...input.slice(0, -1).map((round) => parseOwn(pastSchema, round)),
       parseOwn(lastSchema, input.at(-1)),
     ]),
   );

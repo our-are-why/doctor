@@ -46,10 +46,15 @@ function proposalSummary(proposal: _Proposal_Task_) {
           feedback: last.request.feedback.text,
           ...(last.request.passages.length === 0
             ? {}
-            : { passages: last.request.passages.map((passage) => ({ words: passage.words, within: passage.within, note: passage.note.text })) }),
+            : {
+                passages: last.request.passages.map((passage) => ({ words: passage.words, within: passage.within, at: passage.at, note: passage.note.text })),
+              }),
         }
       : {}),
     ...(proposal.state === "rejected" || proposal.state === "withdrawn" ? reasonOf(proposal.reason) : {}),
+    // edited by the person reviewing it, its operations as they left them,
+    // to revise from rather than what was proposed before
+    ...(last.version.written.by === "human" ? { edited: last.version.operations } : {}),
   };
 }
 
@@ -117,7 +122,7 @@ async function taskView(place: _Place_Tasks_, task: _ACTIVE_Task__Doctor_) {
 function nextStep(task: _WORKING_Task__Doctor_): string {
   const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
   if (revising.length > 0) {
-    return `revise proposal ${revising.join(", ")} as its feedback and passages ask, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit --note "<what you changed>"\`, then \`doctor wait\``;
+    return `revise proposal ${revising.join(", ")} as its feedback and passages ask, from its "edited" operations where it has them, keeping those edits, with \`doctor propose\` for its document against the base shown here; once nothing's left to revise, \`doctor submit --note "<what you changed>"\`, then \`doctor wait\``;
   }
   if (task.proposals.length === 0) {
     return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers; a request without targets reaches every document, which `doctor documents` lists; then `doctor submit --note \"<what you did, or why nothing needed changing>\"` to hand them over, and `doctor wait`";

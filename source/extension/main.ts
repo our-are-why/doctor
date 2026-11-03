@@ -29,6 +29,7 @@ import {
   type _View_Drafting_,
   type _Listed_Document_,
   type _Message_Server_,
+  type _Amendment_Review_,
   type _Open_Proposal_,
   type _REVIEW_Message__Client_,
   type _TASK_Message__Client_,
@@ -55,6 +56,7 @@ import {
   parkTask,
   readTask,
   reject,
+  editProposal,
   reopen,
   requestChanges,
   whenMerged,
@@ -213,11 +215,11 @@ function feedbackOf(proposal: _Proposal_Task_): string {
 
 // The amendments last requested of a proposal still in play: what should
 // change in the whole of it, with no words, then notes on its words.
-function amendmentsOf(proposal: _Proposal_Task_): Array<{ words: string; within: string; note: string }> {
+function amendmentsOf(proposal: _Proposal_Task_): Array<_Amendment_Review_> {
   const [last] = proposal.rounds.flatMap((round) => (round.kind === "requested" ? [round.request] : [])).slice(-1);
   if (last === undefined) return [];
-  const whole = last.feedback.text.trim() === "" ? [] : [{ words: "", within: "", note: last.feedback.text }];
-  return [...whole, ...last.passages.map((passage) => ({ words: passage.words, within: passage.within, note: passage.note.text }))];
+  const whole = last.feedback.text.trim() === "" ? [] : [{ words: "", within: "", at: 0, note: last.feedback.text }];
+  return [...whole, ...last.passages.map((passage) => ({ words: passage.words, within: passage.within, at: passage.at, note: passage.note.text }))];
 }
 
 // the active task's proposals on a file's documents, all but those withdrawn
@@ -242,6 +244,7 @@ async function openProposals(tasks: Array<_Task_Doctor_>, file: string): Promise
         operations: version.operations,
         state: applied.length > 0 ? "applied" : proposal.state,
         rounds: proposal.rounds.length,
+        written: version.written.by,
         feedback: feedbackOf(proposal),
         changed,
         amendments: amendmentsOf(proposal),
@@ -486,6 +489,10 @@ async function reviewProposal(message: _REVIEW_Message__Client_, send: _Send_Ses
   }
   if (verdict.kind === "reopen") {
     const outcome = await reopen(place, message.task, message.proposal);
+    return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
+  }
+  if (verdict.kind === "edit") {
+    const outcome = await editProposal(place, message.task, message.proposal, verdict.operations);
     return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
   }
   const passages = verdict.passages.map((passage) => ({ ...passage, note: { text: passage.note, overlay: [] } }));

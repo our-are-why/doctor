@@ -94,7 +94,8 @@ export type _Verdict_Review_ =
   | _ACCEPT_Verdict__Review_
   | _REJECT_Verdict__Review_
   | _REQUEST_Verdict__Review_
-  | _REOPEN_Verdict__Review_;
+  | _REOPEN_Verdict__Review_
+  | _EDIT_Verdict__Review_;
 
 interface __BASE_Verdict__Review_<__VerdictKind__ extends string> {
   kind: __VerdictKind__;
@@ -110,11 +111,26 @@ export interface _REJECT_Verdict__Review_ extends __BASE_Verdict__Review_<"rejec
 // one or the other at least
 export interface _REQUEST_Verdict__Review_ extends __BASE_Verdict__Review_<"request"> {
   feedback: string;
-  passages: Array<{ words: string; within: string; note: string }>;
+  passages: Array<_Amendment_Review_>;
+}
+
+// An amendment to a proposal: a note on its words, the text they're in and
+// where in it they start, counting code points; or, with no words, on the
+// whole of it.
+export interface _Amendment_Review_ {
+  words: string;
+  within: string;
+  at: number;
+  note: string;
 }
 
 // a rejected proposal reconsidered, waiting for review again
 export interface _REOPEN_Verdict__Review_ extends __BASE_Verdict__Review_<"reopen"> {}
+
+// a proposal as you've edited it yourself: its next round, yours
+export interface _EDIT_Verdict__Review_ extends __BASE_Verdict__Review_<"edit"> {
+  operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
+}
 
 // the tasks, kept current: what the dashboard shows
 export interface _WATCH_Message__Client_ extends __BASE_Message__Client_<"watch"> {}
@@ -179,11 +195,14 @@ const verdictSchema: v.GenericSchema<unknown, _Verdict_Review_> = v.variant("kin
     v.strictObject({
       kind: v.literal("request"),
       feedback: v.string(),
-      passages: v.array(v.strictObject({ words: v.pipe(v.string(), v.minLength(1)), within: v.string(), note: v.string() })),
+      passages: v.array(
+        v.strictObject({ words: v.pipe(v.string(), v.minLength(1)), within: v.string(), at: v.pipe(v.number(), v.integer(), v.minValue(0)), note: v.string() }),
+      ),
     }),
     v.check((request) => request.feedback.trim() !== "" || request.passages.length > 0, "a request says what should change"),
   ),
   v.strictObject({ kind: v.literal("reopen") }),
+  v.strictObject({ kind: v.literal("edit"), operations: proposalOperationsSchema }),
 ]);
 
 const requestTextSchema = v.pipe(v.string(), v.trim(), v.minLength(1, "a request says what it asks for"));
@@ -278,11 +297,13 @@ export interface _Open_Proposal_ {
   operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>;
   state: "proposed" | "revising" | "accepted" | "rejected" | "applied";
   rounds: number;
+  // who wrote its last round: the agent, or you, editing it
+  written: _Author_Doctor_;
   feedback: string;
   changed: Array<_Holder_Text_>;
   // the amendments last requested of it: what should change in the whole of
   // it, with no words, and notes on words of its proposed text
-  amendments: Array<{ words: string; within: string; note: string }>;
+  amendments: Array<_Amendment_Review_>;
   // waiting for review again after revising, its operations as its round
   // before had them, for what's changed since to be marked
   before: Array<_NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>>;
@@ -401,9 +422,10 @@ const openProposalSchema: v.GenericSchema<unknown, _Open_Proposal_> = v.strictOb
   operations: proposalOperationsSchema,
   state: v.picklist(["proposed", "revising", "accepted", "rejected", "applied"]),
   rounds: v.number(),
+  written: v.picklist(["human", "agent"]),
   feedback: v.string(),
   changed: v.array(holderSchema),
-  amendments: v.array(v.strictObject({ words: v.string(), within: v.string(), note: v.string() })),
+  amendments: v.array(v.strictObject({ words: v.string(), within: v.string(), at: v.number(), note: v.string() })),
   before: v.array(proposalOperationsSchema),
 });
 

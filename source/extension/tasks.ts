@@ -22,6 +22,7 @@ import type {
   _PARK_Transition__Task_,
   _Proposal_Task_,
   _Passage_Feedback_,
+  _Past_Round__Proposal_,
   _PROPOSED_Proposal__Task_,
   _REJECTED_Proposal__Task_,
   _Reason_Task_,
@@ -31,6 +32,7 @@ import type {
   _RESUME_Transition__Task_,
   _REVISING_Proposal__Task_,
   _Stamp_Doctor_,
+  _STANDING_Round__Proposal_,
   _Target_Request_,
   _Task_Doctor_,
   _Text_Doctor_,
@@ -705,6 +707,42 @@ export function reject(
   });
 }
 
+const isPast = (round: { kind: string }): round is _Past_Round__Proposal_ => round.kind === "requested" || round.kind === "edited";
+
+// Your own edit to a proposal waiting for review, or accepted and not yet
+// applied, is a round of its own, written by you, decided as the proposal
+// was: its standing round becomes an edited one, and your edit, checked
+// against the version the proposal was made from, its standing round. Edits
+// one after another are one round, the last made over the one before, so
+// what's changed since the agent's round is one round's.
+export function editProposal(
+  place: _Place_Tasks_,
+  id: _Id_Task_,
+  proposalId: _Id_Proposal_,
+  operations: _NonEmpty_<_Operation_Change_<_DRAFT_Id__Node_>>,
+): Promise<_Outcome_Task_<_Id_Proposal_>> {
+  return updateTask(place, id, async (task) => {
+    const [proposal] = [...waitingProposal(task, proposalId), ...decidedProposal(task, proposalId)].filter(
+      (each): each is _PROPOSED_Proposal__Task_ | _ACCEPTED_Proposal__Task_ => each.state === "proposed" || each.state === "accepted",
+    );
+    if (proposal === undefined || !isActive(task)) return refuse(`proposal ${proposalId} isn't waiting for review or accepted`);
+    const last = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
+    const base = await loadVersion(place.data, last.version.base);
+    if (base.kind === "rejected") return { kind: "refused", issues: base.issues };
+    const tried = applyOperations(base.value, realize(operations, mintNode), {
+      document: proposal.document,
+      id: mintId(changeIdSchema, randomBytes(10)),
+    });
+    if (tried.kind === "refused") return refuse(`the edit doesn't apply to the version the proposal was made from: ${tried.issue}`);
+    const earlier = proposal.rounds.slice(0, -1).filter(isPast);
+    const yours: _STANDING_Round__Proposal_ = { kind: "standing", version: { ...last.version, written: stamp("human"), operations } };
+    const rounds: [...Array<_Past_Round__Proposal_>, _STANDING_Round__Proposal_] =
+      last.version.written.by === "human" ? [...earlier, yours] : [...earlier, { kind: "edited", version: last.version }, yours];
+    const edited: _PROPOSED_Proposal__Task_ | _ACCEPTED_Proposal__Task_ = { ...proposal, rounds };
+    return done({ task: { ...task, proposals: replace(task.proposals, edited) }, value: proposal.id });
+  });
+}
+
 // Asking for changes, on a proposal waiting for review or one decided and
 // reconsidered, turns its standing round into a requested one, and hands
 // the task back to the agent if it was in review.
@@ -718,7 +756,7 @@ export function requestChanges(
   return updateTask(place, id, async (task) => {
     const [proposal] = [...waitingProposal(task, proposalId), ...decidedProposal(task, proposalId)];
     if (proposal === undefined || !isActive(task)) return refuse(`proposal ${proposalId} isn't waiting for review or decided`);
-    const earlier = proposal.rounds.slice(0, -1).filter((round) => round.kind === "requested");
+    const earlier = proposal.rounds.slice(0, -1).filter(isPast);
     const { version } = proposal.rounds[proposal.rounds.length - 1] ?? proposal.rounds[0];
     const revising: _REVISING_Proposal__Task_ = {
       state: "revising",

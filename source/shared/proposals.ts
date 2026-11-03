@@ -1,6 +1,7 @@
 import type {
   _Block_Document_,
   _DRAFT_Id__Node_,
+  _Text_Doctor_,
   _Id_Node_,
   _ListItem_Document_,
   _Node_Document_,
@@ -63,7 +64,15 @@ export function realize(
   operations: ReadonlyArray<_Operation_Change_<_DRAFT_Id__Node_>>,
   mint: () => _Id_Node_,
 ): Array<_Operation_Change_> {
-  const minted = new Map<string, _Id_Node_>();
+  return realizeInto(operations, mint, new Map());
+}
+
+// realize, keeping in minted the id minted for each draft id
+export function realizeInto(
+  operations: ReadonlyArray<_Operation_Change_<_DRAFT_Id__Node_>>,
+  mint: () => _Id_Node_,
+  minted: Map<_DRAFT_Id__Node_, _Id_Node_>,
+): Array<_Operation_Change_> {
   const real = (id: _DRAFT_Id__Node_): _Id_Node_ => {
     const known = minted.get(id) ?? mint();
     minted.set(id, known);
@@ -89,4 +98,39 @@ export function realize(
         return operation;
     }
   });
+}
+
+// A subtree with the text of the node with the id given, anywhere in it, as
+// it's given: a section's heading, a quote's reference, a paragraph's or a
+// list item's words; the rest as it was.
+export function withNodeText<__Id__>(node: _Node_Document_<__Id__>, id: __Id__, text: _Text_Doctor_): _Node_Document_<__Id__> {
+  return node.kind === "listItem" ? itemWithText(node, id, text) : blockWithText(node, id, text);
+}
+
+function itemWithText<__Id__>(item: _ListItem_Document_<__Id__>, id: __Id__, text: _Text_Doctor_): _ListItem_Document_<__Id__> {
+  const words = item.id === id ? { text: text.text, overlay: text.overlay } : {};
+  return { ...item, ...words, children: item.children.map((child) => blockWithText(child, id, text)) };
+}
+
+function blockWithText<__Id__>(block: _Block_Document_<__Id__>, id: __Id__, text: _Text_Doctor_): _Block_Document_<__Id__> {
+  switch (block.kind) {
+    case "paragraph":
+      return block.id === id ? { ...block, text: text.text, overlay: text.overlay } : block;
+    case "code":
+      return block;
+    case "section":
+      return { ...block, heading: block.id === id ? text : block.heading, children: block.children.map((child) => blockWithText(child, id, text)) };
+    case "list": {
+      const [first, ...rest] = block.children;
+      return { ...block, children: [itemWithText(first, id, text), ...rest.map((item) => itemWithText(item, id, text))] };
+    }
+    case "quote": {
+      const [first, ...rest] = block.children;
+      return {
+        ...block,
+        reference: block.id === id ? text : block.reference,
+        children: [blockWithText(first, id, text), ...rest.map((child) => blockWithText(child, id, text))],
+      };
+    }
+  }
 }

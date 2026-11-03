@@ -565,7 +565,7 @@ interface __BASE_Proposal__Task_<
   state: __ProposalState__;
   id: _Id_Proposal_;
   document: _Id_Document_;
-  rounds: [...Array<_REQUESTED_Round__Proposal_>, __Last__];
+  rounds: [...Array<_Past_Round__Proposal_>, __Last__];
 }
 
 export interface _PROPOSED_Proposal__Task_
@@ -597,12 +597,18 @@ export interface _WITHDRAWN_Proposal__Task_
 
 export type _Round_Proposal_ = _STANDING_Round__Proposal_ | _REQUESTED_Round__Proposal_;
 
+// A round before a proposal's last: one you asked to change, or one you
+// changed yourself, the round after it being your edit, written by you.
+export type _Past_Round__Proposal_ = _REQUESTED_Round__Proposal_ | _EDITED_Round__Proposal_;
+
 interface __BASE_Round__Proposal_<__RoundKind__ extends string> {
   kind: __RoundKind__;
   version: _Version_Proposal_;
 }
 
 export interface _STANDING_Round__Proposal_ extends __BASE_Round__Proposal_<"standing"> {}
+
+export interface _EDITED_Round__Proposal_ extends __BASE_Round__Proposal_<"edited"> {}
 
 export interface _REQUESTED_Round__Proposal_ extends __BASE_Round__Proposal_<"requested"> {
   request: _Request_Proposal_;
@@ -627,10 +633,13 @@ export interface _Request_Proposal_ {
 }
 
 // words of a proposal's text a request's about: the words, the text they're
-// in as the proposal has it, and what should change about them
+// in as the proposal has it, where in it they start, counting code points,
+// as the same words can be there more than once, and what should change
+// about them
 export interface _Passage_Feedback_ {
   words: string;
   within: string;
+  at: number;
   note: _Text_Doctor_;
 }
 

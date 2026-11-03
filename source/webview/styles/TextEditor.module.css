@@ -528,8 +528,50 @@
   text-underline-offset: 3px;
 }
 
+/* where words were taken out since the round before: a space dotted under,
+   as what's changed is, red, as what's removed is, hovered to say what
+   they were */
+.sinceRemoved {
+  cursor: help;
+  text-decoration: underline dotted var(--vscode-charts-red, #f14c4c);
+  text-decoration-skip-ink: none;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+/* lines taken out since the round before, said beside the nearest one left */
+.sinceGone {
+  color: var(--vscode-charts-red, #f14c4c);
+  cursor: help;
+  font-size: 0.9em;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 .amending :is(.sinceInserted, .sinceChanged) {
   text-decoration: none;
+}
+
+.amending :is(.sinceRemoved, .sinceGone) {
+  text-decoration: none;
+}
+
+/* part of a word taken out: a red dotted bar at the cut, taking no room,
+   with a little more to hover on */
+.sinceCut {
+  border-left: 2px dotted var(--vscode-charts-red, #f14c4c);
+  cursor: help;
+  display: inline-block;
+  height: 1.1em;
+  margin: 0 -5px 0 -1px;
+  padding-right: 4px;
+  vertical-align: text-bottom;
+}
+
+/* a space of its own, where there was none beside what was taken out, gone
+   while it's amended */
+.amending :is(.sinceRemovedSpace, .sinceCut, .sinceGone) {
+  display: none;
 }
 
 .sinceInserted {
@@ -745,6 +787,13 @@
     ),
     linear-gradient(to right, transparent calc(var(--bar-at) + 3px), var(--shade) calc(var(--bar-at) + 3px)),
     linear-gradient(to right, transparent calc(var(--bar-at) + 3px), var(--added) calc(var(--bar-at) + 3px));
+}
+
+/* a proposal's words, editable where they're shown: a caret over them, and
+   nothing else, so they read as they are while they're edited */
+.editableText {
+  cursor: text;
+  outline: none;
 }
 
 /* a line wraps at the editor's width, as the document's lines do */
@@ -1024,6 +1073,12 @@
    form's purple; and those batched, dotted, as a draft's requests are */
 ::highlight(doctor-writing) {
   background-color: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 35%, transparent);
+}
+
+/* the words you've changed in a proposal while you edit it, as tight as they
+   run, purple, as what's yours is */
+::highlight(doctor-edited) {
+  background-color: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 28%, transparent);
 }
 
 ::highlight(doctor-batched) {

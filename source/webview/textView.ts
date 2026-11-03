@@ -3,6 +3,7 @@ import type {
   _Block_Document_,
   _Contrast_Mark_,
   _Document_Doctor_,
+  _DRAFT_Id__Node_,
   _Holder_Text_,
   _Id_Node_,
   _Id_Proposal_,
@@ -18,11 +19,22 @@ import type {
 } from "../shared/domain.next.ts";
 import { parseOwn } from "../shared/parse.ts";
 import { contentStart, fencePattern, project, startsBlock, type _Projection_ } from "../shared/projection.ts";
-import { realize } from "../shared/proposals.ts";
-import type { _Open_Proposal_, _Verdict_Review_, _View_Drafting_ } from "../shared/protocol.ts";
+import { realize, realizeInto, withNodeText } from "../shared/proposals.ts";
+import type { _Amendment_Review_, _Open_Proposal_, _Verdict_Review_, _View_Drafting_ } from "../shared/protocol.ts";
 import { changeIdSchema, nodeIdSchema, offsetSchema } from "../shared/schema.ts";
 import { readTarget, writeTarget } from "../shared/target.ts";
-import { changedRuns, compareTexts, lengthOf, relink, segmentsOf, toggleContrast, type _Change_Text_, type _Segment_Text_ } from "../shared/text.ts";
+import {
+  changedRuns,
+  compareTexts,
+  differences,
+  lengthOf,
+  relink,
+  rewrite,
+  segmentsOf,
+  toggleContrast,
+  type _Change_Text_,
+  type _Segment_Text_,
+} from "../shared/text.ts";
 import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
 import * as monaco from "./monaco.ts";
 import "./styles/monaco.css";
@@ -246,9 +258,29 @@ interface _Line_Proposal_ {
 
 const plainLine = (content: string): _Line_Proposal_ => ({ content, texts: [], changes: [], note: "" });
 
-// what's changed in a line since its proposal's round before: nothing, all
-// of it, or some of its words
-type _Since_Line_ = { kind: "same" } | { kind: "whole" } | { kind: "words"; changes: Array<_Change_Text_> };
+// whether a proposal's words can be edited where they're shown: which texts
+// can, and what's done with one edited
+type _Editing_Lines_ =
+  | { kind: "fixed" }
+  | { kind: "editable"; textual: (holder: _Holder_Text_) => "text" | "other"; save: (holder: _Holder_Text_, next: _Text_Doctor_) => void };
+
+// What's changed in a line since its proposal's round before: in its words,
+// nothing, all of them or some; where words were taken out of it, at a point
+// in its words as they are now; and lines taken out right before or after
+// it, each run of them one group, marked once.
+interface _Since_Line_ {
+  words: { kind: "same" } | { kind: "whole" } | { kind: "some"; changes: Array<_Change_Text_> };
+  removed: Array<_Removed_Since_>;
+  gone: Array<{ side: "before" | "after"; group: { lines: Array<string> } }>;
+}
+
+// What's taken out of a line's words since the round before, where it was in
+// them as they are now: whole words, or part of one.
+interface _Removed_Since_ {
+  at: number;
+  words: string;
+  kind: "words" | "part";
+}
 
 // the colour a word's underlined in for what's happened to it since its
 // proposal's round before, as it's boxed for what happens to it
@@ -620,6 +652,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         node: (_node: _Id_Node_): Array<_Lines_After_> => [],
         holder: (_holder: _Holder_Text_): Array<_Line_Proposal_> => [],
         all: (): Array<_Line_Proposal_> => [],
+        textual: (_holder: _Holder_Text_): "text" | "other" => "other",
       };
     }
     const projection = project(applied.document);
@@ -644,15 +677,25 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         .filter((place) => (place.holder.kind === "node" && wanted.kind === "node" ? place.holder.node === wanted.node : place.holder.kind === wanted.kind))
         .flatMap((place) => proposalLines(applied.document, projection, place.line, place.line + 1));
     const all = () => proposalLines(applied.document, projection, 0, projection.lines.length);
-    return { node, holder, all };
+    // a text that's words, a title's, a heading's, a quote's reference, a
+    // paragraph's or a list item's, not a line of code
+    const textual = (wanted: _Holder_Text_): "text" | "other" => {
+      if (wanted.kind === "title") return "text";
+      const kind = index.get(wanted.node)?.node.kind;
+      return kind === "section" || kind === "quote" || kind === "paragraph" || kind === "listItem" ? "text" : "other";
+    };
+    return { node, holder, all, textual };
   };
 
   // What's changed in a proposal since its round before, as each leaves the
   // document: line by line, marks included, then word by word where a line
-  // changed. Found for a line drawn by the text it holds, or by what it
-  // reads, unless that's the same for lines changed differently.
+  // changed, with where words were taken out of it, and lines taken out,
+  // marked on the nearest lines either side that aren't blank. Found for a
+  // line drawn by the text it holds, or by what it reads, unless that's the
+  // same for lines changed differently.
   const sinceBefore = (shown: _Document_Doctor_, item: _Open_Proposal_, now: () => Array<_Line_Proposal_>) => {
-    const same = (_line: _Line_Proposal_): _Since_Line_ => ({ kind: "same" });
+    const unchanged = (): _Since_Line_ => ({ words: { kind: "same" }, removed: [], gone: [] });
+    const same = (_line: _Line_Proposal_): _Since_Line_ => unchanged();
     const was = item.before.flatMap((operations) => linesAfter(shown, realize(operations, previewId)).all());
     const lines = was.length === 0 ? [] : now();
     if (lines.length === 0) return same;
@@ -662,35 +705,74 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       ...wholeText(line).map((held) => `text ${held.holder.kind === "node" ? held.holder.node : "title"} ${held.text.text}`),
       `line ${line.content}`,
     ];
+    const signature = (line: _Line_Proposal_) => `${line.content} ${JSON.stringify(line.texts.map((held) => held.text.overlay))}`;
+    const sinces = lines.map(unchanged);
+    for (const run of changedRuns(was.map(signature), lines.map(signature))) {
+      const paired = Math.min(run.to - run.from, run.newTo - run.newFrom);
+      lines.slice(run.newFrom, run.newTo).forEach((line, at) => {
+        const since = sinces[run.newFrom + at] ?? unchanged();
+        const [old] = at < paired ? was.slice(run.from + at, run.from + at + 1) : [];
+        const [before] = old === undefined ? [] : wholeText(old);
+        const [after] = wholeText(line);
+        if (before === undefined || after === undefined) {
+          since.words = { kind: "whole" };
+          return;
+        }
+        const compared = compareTexts(before.text, after.text);
+        // What's taken out, character by character, where it was in the words
+        // as they are now: whole words, from between spaces or an end, or part
+        // of one, cut from inside it or off it, as "s" from "thangs" or "."
+        // from "end.)". A word only cut isn't a word changed, so it isn't
+        // marked as one.
+        const shifts = differences(before.text.text, after.text.text);
+        const placed = (point: number) =>
+          shifts.reduce((at, shift) => (shift.end <= point ? at + lengthOf(shift.inserted) - (shift.end - shift.start) : at), point);
+        const beforePoints = Array.from(before.text.text);
+        const wordy = (point: string | undefined) => point !== undefined && point !== " ";
+        const removed = shifts
+          .filter((shift) => shift.inserted === "" && beforePoints.slice(shift.start, shift.end).some((point) => point !== " "))
+          .map((shift): _Removed_Since_ => {
+            const cut =
+              (wordy(beforePoints[shift.start - 1]) && wordy(beforePoints[shift.start])) ||
+              (wordy(beforePoints[shift.end - 1]) && wordy(beforePoints[shift.end]));
+            return { at: placed(shift.start), words: beforePoints.slice(shift.start, shift.end).join("").trim(), kind: cut ? "part" : "words" };
+          });
+        const insertedAt = shifts
+          .filter((shift) => shift.inserted !== "")
+          .map((shift) => ({ from: placed(shift.start), to: placed(shift.start) + lengthOf(shift.inserted) }));
+        const onlyCut = (change: _Change_Text_) =>
+          change.kind === "replaced" &&
+          removed.some((each) => each.kind === "part" && each.at >= change.from && each.at <= change.to) &&
+          !insertedAt.some((each) => each.from < change.to && each.to > change.from);
+        const changes = compared.after.filter((change) => !onlyCut(change));
+        if (changes.length > 0) since.words = { kind: "some", changes };
+        since.removed = removed;
+      });
+      const gone = was.slice(run.from + paired, run.to).map((line) => line.content.trim()).filter((content) => content !== "");
+      if (gone.length === 0) continue;
+      const group = { lines: gone };
+      const gap = run.newFrom + paired;
+      const blank = (at: number) => (lines[at]?.content ?? "").trim() === "";
+      let before = gap - 1;
+      while (before >= 0 && blank(before)) before -= 1;
+      let after = gap;
+      while (after < lines.length && blank(after)) after += 1;
+      sinces[before]?.gone.push({ side: "after", group });
+      sinces[after]?.gone.push({ side: "before", group });
+    }
     const found = new Map<string, _Since_Line_>();
     const mixed = new Set<string>();
-    const record = (line: _Line_Proposal_, since: _Since_Line_) => {
+    lines.forEach((line, at) => {
+      const since = sinces[at] ?? unchanged();
       for (const key of keysOf(line)) {
         const known = found.get(key);
         if (known !== undefined && JSON.stringify(known) !== JSON.stringify(since)) mixed.add(key);
         found.set(key, since);
       }
-    };
-    const signature = (line: _Line_Proposal_) => `${line.content} ${JSON.stringify(line.texts.map((held) => held.text.overlay))}`;
-    const runs = changedRuns(was.map(signature), lines.map(signature));
-    const changed = new Set(runs.flatMap((run) => lines.slice(run.newFrom, run.newTo)));
-    for (const line of lines) if (!changed.has(line)) record(line, { kind: "same" });
-    for (const run of runs) {
-      lines.slice(run.newFrom, run.newTo).forEach((line, at) => {
-        const [old] = run.from + at < run.to ? was.slice(run.from + at, run.from + at + 1) : [];
-        const [before] = old === undefined ? [] : wholeText(old);
-        const [after] = wholeText(line);
-        if (before === undefined || after === undefined) {
-          record(line, { kind: "whole" });
-          return;
-        }
-        const changes = compareTexts(before.text, after.text).after;
-        record(line, changes.length === 0 ? { kind: "same" } : { kind: "words", changes });
-      });
-    }
+    });
     return (line: _Line_Proposal_): _Since_Line_ => {
       const [key] = keysOf(line).filter((each) => found.has(each) && !mixed.has(each));
-      return (key === undefined ? undefined : found.get(key)) ?? { kind: "same" };
+      return (key === undefined ? undefined : found.get(key)) ?? unchanged();
     };
   };
 
@@ -718,17 +800,18 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // task's requests being drafted are, and the words a change is being
   // written about purple, as the request form's, through the browser's
   // highlights, which leave the text as it is.
-  const batches = new Map<_Id_Proposal_, Array<{ words: string; within: string; note: string }>>();
+  const batches = new Map<_Id_Proposal_, Array<_Amendment_Review_>>();
   // what's written for the whole of a proposal in the form under its bar, and
   // which of those forms are open, kept while the proposals are drawn again;
   // and how to open each, from its lines' menu
   const wholes = new Map<_Id_Proposal_, string>();
   const opened = new Set<_Id_Proposal_>();
   let openers = new Map<_Id_Proposal_, () => void>();
-  const marking = typeof Highlight === "function" ? [{ batched: new Highlight(), writing: new Highlight() }] : [];
+  const marking = typeof Highlight === "function" ? [{ batched: new Highlight(), writing: new Highlight(), edited: new Highlight() }] : [];
   for (const each of marking) {
     CSS.highlights.set("doctor-batched", each.batched);
     CSS.highlights.set("doctor-writing", each.writing);
+    CSS.highlights.set("doctor-edited", each.edited);
   }
   // A right-click menu over a proposal's lines, which Monaco's own menu never
   // reaches: the offers the document's selection has, for the proposal.
@@ -766,6 +849,8 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   });
   // where a moved block's label, on the line it moves from, goes to
   let jumps = new Map<number, number>();
+  // where a moved block's note, where it goes, goes back to: where it moves from
+  const jumpsBack = new WeakMap<_Line_Proposal_, number>();
   // what accepted proposals changed, marked apart from what's under review,
   // so those lines keep their blocks' bands
   const decided = editor.createDecorationsCollection();
@@ -849,6 +934,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // the proposals shown, drawn again when the lines' width changes, as what
   // they add wraps with it
   let showing: Array<_Open_Proposal_> = [];
+  // the proposal's words being edited, if any, and what to draw once they're not
+  let editingWords: Array<HTMLElement> = [];
+  let deferred: Array<Array<_Open_Proposal_>> = [];
   let drawnWidth = 0;
   editor.onDidLayoutChange((info) => {
     if (showing.length > 0 && info.contentWidth !== drawnWidth) showProposals(showing);
@@ -861,6 +949,11 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // line's number starts, as what it adds is, so the lines it's about read
   // as one block with its actions closing it.
   const showProposals = (open: Array<_Open_Proposal_>) => {
+    // put off while a proposal's words are being edited
+    if (editingWords.some((words) => words.isConnected && window.document.activeElement === words)) {
+      deferred = [open];
+      return;
+    }
     clearProposals();
     showing = open;
     drawnWidth = editor.getLayoutInfo().contentWidth;
@@ -970,7 +1063,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const linesOf = new WeakMap<Element, _Line_Proposal_>();
     // the words selected in a proposal's lines, a passage of each line's text
     // they're in
-    const passagesIn = (lines: HTMLElement): Array<{ words: string; within: string; note: string }> => {
+    const passagesIn = (lines: HTMLElement): Array<_Amendment_Review_> => {
       const selection = window.getSelection();
       if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) return [];
       const range = selection.getRangeAt(0);
@@ -988,14 +1081,205 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         const from = shownLine.contains(range.startContainer) ? offset(range.startContainer, range.startOffset) : 0;
         const to = shownLine.contains(range.endContainer) ? offset(range.endContainer, range.endOffset) : line.content.length;
         const body = line.content.slice(held.start);
-        const words = body.slice(Math.max(from - held.start, 0), Math.max(Math.min(to, line.content.length) - held.start, 0)).trim();
-        return words === "" ? [] : [{ words, within: held.text.text, note: "" }];
+        const selected = body.slice(Math.max(from - held.start, 0), Math.max(Math.min(to, line.content.length) - held.start, 0));
+        const words = selected.trim();
+        // where they start in the text, past any spaces selected before them
+        const start = Math.max(from - held.start, 0) + selected.length - selected.trimStart().length;
+        return words === "" ? [] : [{ words, within: held.text.text, at: pointsOf(body, start), note: "" }];
+      });
+    };
+    // a stretch of a line's content, as a range of what's drawn of it
+    const rangeIn = (shownLine: Element, from: number, to: number): Array<Range> => {
+      const walker = window.document.createTreeWalker(shownLine, NodeFilter.SHOW_TEXT);
+      const range = window.document.createRange();
+      let passed = 0;
+      let started: "no" | "yes" = "no";
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const length = node.textContent?.length ?? 0;
+        if (started === "no" && from <= passed + length) {
+          range.setStart(node, from - passed);
+          started = "yes";
+        }
+        if (started === "yes" && to <= passed + length) {
+          range.setEnd(node, to - passed);
+          return [range];
+        }
+        passed += length;
+      }
+      return [];
+    };
+    // A text's words, into what's given: each stretch under one set of marks,
+    // cut where a change starts or ends, and a change's stretches boxed
+    // together, so one box spans words under different marks; underlined, in
+    // a span of its own, where it's changed since the round before.
+    const drawText = (
+      into: HTMLElement,
+      text: _Text_Doctor_,
+      changes: Array<_Change_Text_>,
+      fresh: Array<_Change_Text_>,
+      removed: Array<_Removed_Since_>,
+    ) => {
+      const body = text.text;
+      let box: Array<{ change: _Change_Text_; node: HTMLElement }> = [];
+      // Where words were taken out since the round before, a space's width
+      // dotted under, red, saying what they were: the space beside where they
+      // were, the gap they left, or, with none, a space of its own there.
+      // Where part of a word was, a red dotted bar at the cut, taking no room.
+      const points = Array.from(body);
+      const besideOf = (each: _Removed_Since_) => (points[each.at - 1] === " " ? each.at - 1 : points[each.at] === " " ? each.at : -1);
+      const spaced = removed.flatMap((each) => {
+        const beside = besideOf(each);
+        return each.kind === "part" || beside === -1 ? [] : [{ from: beside, to: beside + 1, words: each.words }];
+      });
+      const takenOut = removed
+        .filter((each) => each.kind === "part" || besideOf(each) === -1)
+        .toSorted((first, second) => first.at - second.at);
+      const said = (mark: HTMLElement, words: string) => {
+        mark.title = `removed “${words}”`;
+        return mark;
+      };
+      let marked = 0;
+      const markTakenOut = (upTo: number) => {
+        for (; marked < takenOut.length; marked += 1) {
+          const each = takenOut[marked];
+          if (each === undefined || each.at > upTo) return;
+          into.append(
+            said(
+              each.kind === "part" ? element("span", styles.sinceCut, "") : element("span", `${styles.sinceRemoved} ${styles.sinceRemovedSpace}`, "\u00a0"),
+              each.words,
+            ),
+          );
+          box = [];
+        }
+      };
+      for (const segment of segmentsOf(text)) {
+        const inside = [
+          ...changes.flatMap((change) => [change.from, change.to]),
+          ...fresh.flatMap((change) => [change.from, change.to]),
+          ...spaced.flatMap((each) => [each.from, each.to]),
+          ...takenOut.map((each) => each.at),
+        ].filter((cut) => cut > segment.from && cut < segment.to);
+        const cuts = [...new Set([segment.from, ...inside, segment.to])].toSorted((first, second) => first - second);
+        cuts.slice(1).forEach((to, index) => {
+          const from = cuts[index] ?? segment.from;
+          markTakenOut(from);
+          const words = element("span", segmentClass(segment), body.slice(unitsOf(body, from), unitsOf(body, to)));
+          const [recent] = fresh.filter((each) => each.from <= from && each.to >= to);
+          const lately = recent === undefined ? words : element("span", sinceClass[recent.kind], "");
+          if (lately !== words) lately.append(words);
+          const [gap] = spaced.filter((each) => each.from <= from && each.to >= to);
+          const stretch = gap === undefined ? lately : said(element("span", styles.sinceRemoved, ""), gap.words);
+          if (stretch !== lately) stretch.append(lately);
+          const [change] = changes.filter((each) => each.from <= from && each.to >= to);
+          const [open] = box;
+          if (change === undefined) {
+            box = [];
+            into.append(stretch);
+          } else if (open !== undefined && open.change === change) {
+            open.node.append(stretch);
+          } else {
+            const node = element("span", changeClass[change.kind], "");
+            node.append(stretch);
+            into.append(node);
+            box = [{ change, node }];
+          }
+        });
+      }
+      markTakenOut(Number.POSITIVE_INFINITY);
+    };
+    // lines taken out since the round before, each run of them marked once,
+    // on the first line drawn beside them, and what drew each, so one drawn
+    // again draws its own again
+    const goneDrawn = new Set<{ lines: Array<string> }>();
+    const goneIn = new WeakMap<HTMLElement, Array<{ lines: Array<string> }>>();
+    // the keys that toggle a mark over what's selected, as in the document
+    const markKeys: Array<{ key: string; shift: "shift" | "plain"; contrast: _Contrast_Mark_ }> = [
+      { key: "b", shift: "plain", contrast: "bold" },
+      { key: "i", shift: "plain", contrast: "italic" },
+      { key: "m", shift: "shift", contrast: "monospace" },
+      { key: "h", shift: "shift", contrast: "highlighted" },
+      { key: "x", shift: "shift", contrast: "struck" },
+    ];
+    // A proposal's words, edited where they're shown: typed over, their marks
+    // kept, and toggled with the document's keys; saved on Enter or on
+    // leaving them, and put back as they were on Escape. While they're
+    // edited, nothing's redrawn, so an edit isn't lost to a redraw, and only
+    // the words changed so far are marked, as tight as they run, compared
+    // word by word with what the proposal had; once saved, they're marked as
+    // any round's changes are.
+    const makeEditable = (words: HTMLElement, held: { holder: _Holder_Text_; text: _Text_Doctor_ }, save: (next: _Text_Doctor_) => void) => {
+      words.contentEditable = "plaintext-only";
+      let working = held.text;
+      let leaving: "save" | "revert" = "save";
+      const current = () => rewrite(working, words.textContent ?? "").text;
+      const markEdited = () => {
+        const now = current();
+        for (const each of marking) {
+          each.edited.clear();
+          for (const change of compareTexts(held.text, now).after) {
+            for (const range of rangeIn(words, unitsOf(now.text, change.from), unitsOf(now.text, change.to))) each.edited.add(range);
+          }
+        }
+      };
+      words.addEventListener("input", markEdited);
+      words.addEventListener("focus", () => {
+        editingWords = [words];
+        leaving = "save";
+      });
+      words.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.key === "Enter" || event.key === "Escape") {
+          event.preventDefault();
+          leaving = event.key === "Enter" ? "save" : "revert";
+          words.blur();
+          return;
+        }
+        const shift = event.shiftKey ? "shift" : "plain";
+        const [toggle] = markKeys.filter((each) => (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === each.key && each.shift === shift);
+        if (toggle === undefined) return;
+        event.preventDefault();
+        const selection = window.getSelection();
+        const [range] = selection === null || selection.rangeCount === 0 ? [] : [selection.getRangeAt(0)];
+        if (range === undefined || !words.contains(range.startContainer) || !words.contains(range.endContainer)) return;
+        const offset = (container: Node, at: number) => {
+          const measure = window.document.createRange();
+          measure.setStart(words, 0);
+          measure.setEnd(container, at);
+          return measure.toString().length;
+        };
+        const from = offset(range.startContainer, range.startOffset);
+        const to = offset(range.endContainer, range.endOffset);
+        if (to <= from) return;
+        working = current();
+        working = toggleContrast(working, pointsOf(working.text, from), pointsOf(working.text, to), toggle.contrast);
+        words.replaceChildren();
+        drawText(words, working, [], [], []);
+        // what was selected, selected again
+        for (const again of rangeIn(words, from, to)) {
+          selection?.removeAllRanges();
+          selection?.addRange(again);
+        }
+        markEdited();
+      });
+      words.addEventListener("blur", () => {
+        editingWords = [];
+        for (const each of marking) each.edited.clear();
+        const next = leaving === "revert" ? held.text : current();
+        const edited = next.text !== held.text.text || JSON.stringify(next.overlay) !== JSON.stringify(held.text.overlay);
+        if (leaving === "save" && edited) save(next);
+        // what was put off while it was edited is drawn now, as is what's
+        // put back
+        const [waiting] = deferred;
+        deferred = [];
+        if (leaving === "revert" || waiting !== undefined) showProposals(waiting ?? showing);
       });
     };
     // each line with its markers drawn as the editor draws them, and its
-    // words marked as they'll be
-    const linesZone = (lines: Array<_Line_Proposal_>, tint: string, since: (line: _Line_Proposal_) => _Since_Line_) => {
+    // words marked as they'll be, editable where its proposal's are
+    const linesZone = (lines: Array<_Line_Proposal_>, tint: string, since: (line: _Line_Proposal_) => _Since_Line_, editing: _Editing_Lines_) => {
       const zone = element("div", `${styles.proposalAdded} ${tint}`, "");
+      const drew: Array<{ lines: Array<string> }> = [];
+      goneIn.set(zone, drew);
       for (const line of lines) {
         const { content, texts, changes, note } = line;
         const lately = since(line);
@@ -1011,35 +1295,17 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         if (held !== undefined && body !== "" && body === held.text.text) {
           shownLine.append(content.slice(at, held.start));
           const fresh: Array<_Change_Text_> =
-            lately.kind === "words" ? lately.changes : lately.kind === "whole" ? [{ kind: "inserted", from: 0, to: Array.from(body).length }] : [];
-          // each stretch under one set of marks, cut where a change starts
-          // or ends, and a change's stretches boxed together, so one box
-          // spans words under different marks
-          let box: Array<{ change: _Change_Text_; node: HTMLElement }> = [];
-          for (const segment of segmentsOf(held.text)) {
-            const inside = [...changes, ...fresh].flatMap((change) => [change.from, change.to]).filter((cut) => cut > segment.from && cut < segment.to);
-            const cuts = [...new Set([segment.from, ...inside, segment.to])].toSorted((first, second) => first - second);
-            cuts.slice(1).forEach((to, index) => {
-              const from = cuts[index] ?? segment.from;
-              const words = element("span", segmentClass(segment), body.slice(unitsOf(body, from), unitsOf(body, to)));
-              // underlined, in its own span, where it's changed since the round before
-              const [recent] = fresh.filter((each) => each.from <= from && each.to >= to);
-              const stretch = recent === undefined ? words : element("span", sinceClass[recent.kind], "");
-              if (stretch !== words) stretch.append(words);
-              const [change] = changes.filter((each) => each.from <= from && each.to >= to);
-              const [open] = box;
-              if (change === undefined) {
-                box = [];
-                shownLine.append(stretch);
-              } else if (open !== undefined && open.change === change) {
-                open.node.append(stretch);
-              } else {
-                const node = element("span", changeClass[change.kind], "");
-                node.append(stretch);
-                shownLine.append(node);
-                box = [{ change, node }];
-              }
-            });
+            lately.words.kind === "some"
+              ? lately.words.changes
+              : lately.words.kind === "whole"
+                ? [{ kind: "inserted", from: 0, to: Array.from(body).length }]
+                : [];
+          const editable = editing.kind === "editable" && editing.textual(held.holder) === "text" ? [editing] : [];
+          const words = editable.length > 0 ? element("span", styles.editableText, "") : shownLine;
+          drawText(words, held.text, changes, fresh, lately.removed);
+          for (const each of editable) {
+            makeEditable(words, held, (next) => each.save(held.holder, next));
+            shownLine.append(words);
           }
           at = content.length;
         }
@@ -1047,12 +1313,27 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         // after its markers and indent
         const rest = content.slice(at);
         const lead = (/^ */.exec(rest)?.[0] ?? "").length;
-        if (lately.kind === "whole" && rest.trim() !== "") {
+        if (lately.words.kind === "whole" && rest.trim() !== "") {
           shownLine.append(rest.slice(0, lead), element("span", styles.sinceInserted, rest.slice(lead)));
         } else {
           shownLine.append(content === "" && note === "" ? " " : rest);
         }
-        if (note !== "") shownLine.append(element("span", styles.mark, content === "" ? `(${note})` : `  (${note})`));
+        const back = jumpsBack.get(line);
+        if (note !== "" && back === undefined) shownLine.append(element("span", styles.mark, content === "" ? `(${note})` : `  (${note})`));
+        if (note !== "" && back !== undefined) {
+          const link = element("span", styles.moveLabel, `↩ ${note}`);
+          link.addEventListener("click", () => editor.revealLineInCenter(Math.min(Math.max(back, 1), model.getLineCount())));
+          shownLine.append("  ", link);
+        }
+        for (const gone of lately.gone) {
+          if (goneDrawn.has(gone.group)) continue;
+          goneDrawn.add(gone.group);
+          drew.push(gone.group);
+          const count = gone.group.lines.length;
+          const mark = element("span", styles.sinceGone, `− ${count} ${count === 1 ? "line" : "lines"} removed ${gone.side === "after" ? "below" : "above"}`);
+          mark.title = gone.group.lines.join("\n");
+          shownLine.append("  ", mark);
+        }
         // wrapped, it goes on under its first character, as the editor's lines do
         const indent = (/^ */.exec(content)?.[0] ?? "").length;
         shownLine.style.paddingLeft = `${indent}ch`;
@@ -1099,7 +1380,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
                   ? "revising"
                   : `revising${said}`
                 : item.rounds > 1
-                  ? `round ${item.rounds}${item.before.length > 0 ? " · underlined: changed since the round before" : ""}${said}`
+                  ? `round ${item.rounds}${item.written === "human" ? " · your edit" : ""}${item.before.length > 0 ? " · underlined: changed since the round before" : ""}${said}`
                   : "";
       if (item.state === "revising") row.append(element("span", styles.spinner, ""));
       row.append(element("span", styles.proposalRound, about));
@@ -1224,7 +1505,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         batches.delete(item.proposal);
         wholes.delete(item.proposal);
         opened.delete(item.proposal);
-        sendBack(item, [...current, ...(written === "" ? [] : [{ words: "", within: "", note: written }])]);
+        sendBack(item, [...current, ...(written === "" ? [] : [{ words: "", within: "", at: 0, note: written }])]);
       };
       // each change batched: its words, or the whole of it, and its note,
       // which can be edited, or the change taken out
@@ -1292,9 +1573,45 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       overlay.style.removeProperty("visibility");
       return tall;
     };
+    // Your edit to a text a proposal shows, as its operations, its next round:
+    // in a node it adds, that node's text where it's added; in one the
+    // document has, the text written and styled as you left it, in place of
+    // how the proposal had it. An edit that leaves it changing nothing isn't
+    // one.
+    const saveEdit = (
+      shown: _Document_Doctor_,
+      item: _Open_Proposal_,
+      drafts: Map<_Id_Node_, _DRAFT_Id__Node_>,
+      holder: _Holder_Text_,
+      next: _Text_Doctor_,
+    ) => {
+      const draft = holder.kind === "node" ? drafts.get(holder.node) : undefined;
+      const sameHolder = (other: _Holder_Text_) => (other.kind === "title" ? holder.kind === "title" : holder.kind === "node" && other.node === holder.node);
+      const written = (): Array<_Operation_Change_<_DRAFT_Id__Node_>> => {
+        const [before] = textAt(shown, holder);
+        if (before === undefined) return [];
+        const same = (operation: _Operation_Change_<_DRAFT_Id__Node_>) =>
+          (operation.kind === "write" || operation.kind === "style") && sameHolder(operation.holder);
+        const at = item.operations.findIndex(same);
+        const kept = item.operations.filter((operation) => !same(operation));
+        const made = textOperations(holder, before, next).flatMap((operation) =>
+          operation.kind === "write" || operation.kind === "style" ? [operation] : [],
+        );
+        return at === -1 ? [...kept, ...made] : [...kept.slice(0, at), ...made, ...kept.slice(at)];
+      };
+      const operations =
+        draft === undefined
+          ? written()
+          : item.operations.map((operation) =>
+              operation.kind === "insert" ? { ...operation, subtree: withNodeText(operation.subtree, draft, next) } : operation,
+            );
+      const [first, ...rest] = operations;
+      if (first === undefined) return;
+      hooks.review(item.task, item.proposal, { kind: "edit", operations: [first, ...rest] });
+    };
     // Changes sent back as one request: those on its words as passages, those
     // on the whole of it as what else should change.
-    const sendBack = (item: _Open_Proposal_, changes: Array<{ words: string; within: string; note: string }>) => {
+    const sendBack = (item: _Open_Proposal_, changes: Array<_Amendment_Review_>) => {
       const whole = changes.filter((change) => change.words === "").map((change) => change.note);
       hooks.review(item.task, item.proposal, {
         kind: "request",
@@ -1336,7 +1653,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     let changing: Array<{
       item: _Open_Proposal_;
       host: HTMLElement;
-      found: Array<{ words: string; within: string; note: string }>;
+      found: Array<_Amendment_Review_>;
       route: "send" | "batch";
     }> = [];
     // While it's amended, with amendments drafted or a form open on it, what's
@@ -1373,7 +1690,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         changeInput.focus();
         return;
       }
-      const changes = open.found.length > 0 ? open.found.map((passage) => ({ ...passage, note })) : [{ words: "", within: "", note }];
+      const changes = open.found.length > 0 ? open.found.map((passage) => ({ ...passage, note })) : [{ words: "", within: "", at: 0, note }];
       closeChange();
       if (open.route === "send") {
         sendBack(open.item, changes);
@@ -1406,7 +1723,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const openChange = (
       item: _Open_Proposal_,
       host: HTMLElement,
-      found: Array<{ words: string; within: string; note: string }>,
+      found: Array<_Amendment_Review_>,
       ranges: Array<Range>,
       route: "send" | "batch",
       under: Array<Element>,
@@ -1457,7 +1774,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const runEnds = (lines: Set<number>) => [...lines].filter((line) => !lines.has(line + 1));
     const struck: Array<monaco.editor.IModelDeltaDecoration> = [];
     const hidden: Array<monaco.IRange> = [];
-    // the lowest line the proposal being drawn reaches, its actions going under it
+    // the lowest line the proposal being drawn reaches, its actions going under
+    // it: not where it moves something from, as its actions go where that
+    // goes, where the proposal shows it
     let reached: Array<number> = [];
     // the lines it targets and how, marked in the margin once its bottom's
     // known, so its bar runs straight from them to its own
@@ -1491,7 +1810,6 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const dim = (from: number, to: number) => {
       for (let line = from; line <= to; line += 1) {
         const content = model.getLineContent(line);
-        reached.push(line);
         struck.push({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className: styles.movedLine } });
         gutters.push({ line, band: styles.movedGutter });
         if (content.length > 0) struck.push({ range: new monaco.Range(line, 1, line, content.length + 1), options: { inlineClassName: styles.moved } });
@@ -1584,28 +1902,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
               ],
         );
       };
-      // a stretch of a line's content, as a range of what's drawn of it
-      const rangeIn = (shownLine: Element, from: number, to: number): Array<Range> => {
-        const walker = window.document.createTreeWalker(shownLine, NodeFilter.SHOW_TEXT);
-        const range = window.document.createRange();
-        let passed = 0;
-        let started: "no" | "yes" = "no";
-        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-          const length = node.textContent?.length ?? 0;
-          if (started === "no" && from <= passed + length) {
-            range.setStart(node, from - passed);
-            started = "yes";
-          }
-          if (started === "yes" && to <= passed + length) {
-            range.setEnd(node, to - passed);
-            return [range];
-          }
-          passed += length;
-        }
-        return [];
-      };
       // the words of the amendments being drafted, or, while it's revised,
-      // requested, marked where they are in these lines
+      // requested, marked where they are in these lines: where each starts
+      // in its text, as the same words can be there more than once
       const markBatched = (lines: HTMLElement) => {
         for (const change of [...(batches.get(item.proposal) ?? []), ...(item.state === "revising" ? item.amendments : [])]) {
           if (change.words === "") continue;
@@ -1613,15 +1912,15 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
             const line = linesOf.get(shownLine);
             const [held] = line?.texts ?? [];
             if (line === undefined || held === undefined || held.text.text !== change.within) continue;
-            const at = line.content.indexOf(change.words, held.start);
-            if (at === -1) continue;
+            const at = held.start + unitsOf(change.within, change.at);
+            if (line.content.slice(at, at + change.words.length) !== change.words) continue;
             for (const each of marking) for (const range of rangeIn(shownLine, at, at + change.words.length)) each.batched.add(range);
             break;
           }
         }
       };
       const zoneOf = (after: number, lines: Array<_Line_Proposal_>, rank: number): _Zone_Proposal_ => {
-        const shownLines = linesZone(lines, tint, since);
+        const shownLines = linesZone(lines, tint, since, editing);
         if (item.state === "revising") shownLines.classList.add(styles.revisingLines);
         const boxes = boxesOf(shownLines);
         const rows = Math.max(Math.round(boxes.reduce((sum, box) => sum + box.height, 0) / height), 1);
@@ -1655,6 +1954,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       // a zone no longer shown takes its lines' overlay with it
       const forget = (zone: _Zone_Proposal_ | undefined) => {
         for (const node of zone?.level ?? []) {
+          for (const group of goneIn.get(node) ?? []) goneDrawn.delete(group);
           const at = widgets.findIndex((widget) => widget.getDomNode() === node);
           if (at !== -1) widgets.splice(at, 1);
         }
@@ -1685,8 +1985,17 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         return "joined";
       };
       let last = 1;
-      const operations = realize(item.operations, previewId);
+      const minted = new Map<_DRAFT_Id__Node_, _Id_Node_>();
+      const operations = realizeInto(item.operations, previewId, minted);
       const previewed = linesAfter(shown, operations);
+      const drafts = new Map<_Id_Node_, _DRAFT_Id__Node_>();
+      for (const [draft, real] of minted) drafts.set(real, draft);
+      // its words can be edited while it waits for review, or once it's
+      // accepted; not while it's revised, or once it's rejected
+      const editing: _Editing_Lines_ =
+        item.state === "proposed" || item.state === "accepted"
+          ? { kind: "editable", textual: previewed.textual, save: (holder, next) => saveEdit(shown, item, drafts, holder, next) }
+          : { kind: "fixed" };
       // back from revising, what's changed since its round before
       const since = sinceBefore(shown, item, previewed.all);
       // What changes inside a block it moves shows where the block goes, its
@@ -1823,6 +2132,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
               ...lines,
               lines: lines.lines.map(changedWhereMoved).map((each, at) => (at === 0 ? { ...each, note: `moved from line ${line}` } : each)),
             };
+            for (const first of noted.lines.slice(0, 1)) jumpsBack.set(first, line);
             const moved = (after: number) => {
               const where = after === 0 ? "to the top" : `below line ${after}`;
               label(line, after < line ? `↑ moves ${where}` : `↓ moves ${where}`, after + 1);

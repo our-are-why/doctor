@@ -18,8 +18,12 @@ and comes back to you if any is sent back for changes.
                            many seconds, answering { "turn": "human", ... }. A proposal
                            sent back says what should change in its "feedback", and may
                            have "passages", notes on words of the text it proposed: each
-                           the "words", the text "within" which they are, and the "note".
-                           Revise it as the same proposal, with doctor propose
+                           the "words", the text "within" which they are, "at" where in
+                           it they start (in characters, as the same words can be there
+                           more than once), and the "note".
+                           One edited by the person reviewing it has "edited", its
+                           operations as they left them: revise from those, keeping
+                           their edits. Revise it as the same proposal, with doctor propose
   doctor task              the active task: its "requests", each with its "text" and
                            "targets", each target shown as it is now: a "document"
                            with all its "blocks", a "node", or a "passage" of a text
