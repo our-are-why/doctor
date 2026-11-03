@@ -64,6 +64,8 @@ export interface _View_Text_ {
   mark: (issues: Array<string>) => void;
   proposals: (open: Array<_Open_Proposal_>) => void;
   focus: (drafting: Array<_View_Drafting_>) => void;
+  // the task active now, if any, which starting another parks
+  active: (task: Array<_Id_Task_>) => void;
   // the form for a request about the whole document, docked under the bar
   requestForDocument: (route: _Route_Form_) => void;
   // scrolls to the first proposal waiting for review
@@ -73,6 +75,15 @@ export interface _View_Text_ {
 
 // what the request form does with what's written in it
 export type _Route_Form_ = "quick" | "draft";
+
+// a request form open: which, what's written in it, and how to go to it or
+// close it
+interface _Open_Form_ {
+  key: string;
+  written: () => string;
+  focus: () => void;
+  close: () => void;
+}
 
 // positions in a line's content: the document counts code points, Monaco
 // counts UTF-16 units
@@ -806,6 +817,38 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // and how to open each, from its lines' menu
   const wholes = new Map<_Id_Proposal_, string>();
   const opened = new Set<_Id_Proposal_>();
+  // Proposals with a verdict on its way, their buttons off till the proposals
+  // come back, as they do after every verdict, taken or refused.
+  const pending = new Set<_Id_Proposal_>();
+  let received: Array<_Open_Proposal_> = [];
+  let buttonsOf = new Map<_Id_Proposal_, Array<HTMLButtonElement>>();
+  const review = (item: _Open_Proposal_, verdict: _Verdict_Review_) => {
+    pending.add(item.proposal);
+    for (const button of buttonsOf.get(item.proposal) ?? []) button.disabled = true;
+    hooks.review(item.task, item.proposal, verdict);
+  };
+  // the task active now, if any, which a quick task parks
+  let activeTask: Array<_Id_Task_> = [];
+  // One request form open at a time, the task's or an amendment's: opening
+  // another closes the one open, unless something's written in it, when
+  // it's kept, and gone to, instead.
+  let formOpen: Array<_Open_Form_> = [];
+  const makeRoom = (key: string): "room" | "kept" => {
+    const [open] = formOpen;
+    if (open === undefined || open.key === key) return "room";
+    if (open.written().trim() !== "") {
+      open.focus();
+      return "kept";
+    }
+    open.close();
+    return "room";
+  };
+  const holdForm = (form: _Open_Form_) => {
+    formOpen = [form];
+  };
+  const releaseForm = (key: string) => {
+    formOpen = formOpen.filter((open) => open.key !== key);
+  };
   let openers = new Map<_Id_Proposal_, () => void>();
   const marking = typeof Highlight === "function" ? [{ batched: new Highlight(), writing: new Highlight(), edited: new Highlight() }] : [];
   for (const each of marking) {
@@ -885,6 +928,8 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   });
 
   const clearProposals = () => {
+    buttonsOf = new Map();
+    formOpen = formOpen.filter((open) => open.key === "task");
     editor.changeViewZones((accessor) => {
       for (const zone of zones) accessor.removeZone(zone);
     });
@@ -1344,6 +1389,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       return zone;
     };
     const widgets: Array<monaco.editor.IOverlayWidget> = [];
+    // each proposal's Accept and Reject, told when what's written in its
+    // forms changes
+    const holders = new Map<_Id_Proposal_, () => void>();
     // A proposal's actions, under it, on the right: Accept, Reject and Request
     // changes while it waits for review, saying which round it's on and what
     // you asked once it's back from revising; once it's decided, saying so,
@@ -1386,7 +1434,8 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       row.append(element("span", styles.proposalRound, about));
       // Request changes opens the form under its bar: its batched changes, each
       // its words and note, and what should change in the whole of it
-      const request = element("button", styles.proposalButton, "Amend");
+      const request = element("button", styles.proposalButton, "");
+      request.append("Amend", element("span", styles.amendArrow, "▾"));
       const changes = [request];
       const peeking = peeked.has(item.proposal);
       const peek = element("button", styles.proposalButton, peeking ? "Close peek" : "Peek");
@@ -1395,18 +1444,34 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         else peeked.add(item.proposal);
         showProposals(showing);
       });
+      const peekable = item.state === "rejected" || (item.state === "accepted" && hides === "hides") ? [peek] : [];
+      const decisions: Array<HTMLButtonElement> = [];
       if (item.state === "revising") {
         // it shows as it was sent back, so there's nothing to peek at
+      } else if (batch.length > 0) {
+        // while amendments to it are drafted, it's being amended, so it's
+        // decided only once they're sent or discarded, under its bar
+        row.append(...peekable, ...changes);
       } else if (item.state === "rejected" || item.state === "accepted") {
         const reopen = element("button", styles.proposalButton, "Reopen");
-        reopen.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "reopen" }));
-        row.append(...(item.state === "accepted" && hides === "nothing" ? [] : [peek]), reopen, ...changes);
+        reopen.addEventListener("click", () => review(item, { kind: "reopen" }));
+        row.append(...peekable, reopen, ...changes);
       } else {
-        const accept = element("button", styles.proposalAccept, "Accept");
-        const reject = element("button", styles.proposalButton, "Reject");
-        accept.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "accept" }));
-        reject.addEventListener("click", () => hooks.review(item.task, item.proposal, { kind: "reject", reason: "" }));
-        row.append(accept, reject, ...changes);
+        const decision = (className: string, label: string, verdict: _Verdict_Review_) => {
+          const made = window.document.createElement("button");
+          made.className = className;
+          made.textContent = label;
+          // deciding it closes a form of its open, which has nothing
+          // written in it, as they're off while one has
+          made.addEventListener("click", () => {
+            if (form.isConnected) close();
+            if (changing.some((open) => open.item.proposal === item.proposal)) closeChange();
+            review(item, verdict);
+          });
+          decisions.push(made);
+          return made;
+        };
+        row.append(decision(styles.proposalAccept, "Accept", { kind: "accept" }), decision(styles.proposalButton, "Reject", { kind: "reject", reason: "" }), ...changes);
       }
       zone.append(row);
       // While it's revised, the amendments you requested, under its bar: each
@@ -1449,11 +1514,32 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       form.append(list, input, formRow);
 
       let room: Array<{ zone: monaco.editor.IViewZone; id: string }> = [];
+      // Accept and Reject, off while something's written in a form of its,
+      // under its bar or among its lines: what's written is sent or cleared
+      // first, never thrown away by deciding
+      const holdDecisions = () => {
+        const written =
+          (form.isConnected && input.value.trim() !== "") ||
+          (changing.some((open) => open.item.proposal === item.proposal) && changeInput.value.trim() !== "");
+        for (const button of decisions) {
+          button.disabled = written || pending.has(item.proposal);
+          button.title = written ? "Send or clear your amendment first" : "";
+        }
+      };
+      holders.set(item.proposal, holdDecisions);
       const fit = () => {
+        holdDecisions();
         const [placed] = room;
         if (placed === undefined) return;
         input.style.height = "auto";
         input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
+        // Amend, a disclosure, says whether the form it opens is open, pressed
+        // while it is, as a tab over its page, the form's notch reaching up
+        // from the form's top to it
+        request.replaceChildren("Amend", element("span", styles.amendArrow, form.isConnected ? "▴" : "▾"));
+        request.classList.toggle(styles.amendOpen, form.isConnected);
+        request.setAttribute("aria-expanded", form.isConnected ? "true" : "false");
+        request.style.setProperty("--reach", `${row.getBoundingClientRect().bottom - request.getBoundingClientRect().bottom}px`);
         // as tall as the form exactly, so none of the bar's band shows under it
         const pixels = actionLines * height + (form.isConnected ? form.offsetHeight : 0);
         besideForm(margin, form, slice);
@@ -1470,7 +1556,13 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       };
       // opened, the focus goes to what should change in the whole of it;
       // opened again as the proposals are drawn, it's left where it is
+      const key = `amend ${item.proposal}`;
       const open = (focus: "focus" | "leave") => {
+        if (makeRoom(key) === "kept") {
+          opened.delete(item.proposal);
+          return;
+        }
+        holdForm({ key, written: () => input.value, focus: () => input.focus({ preventScroll: true }), close });
         opened.add(item.proposal);
         markAmending(item.proposal);
         if (!form.isConnected) zone.append(form);
@@ -1479,6 +1571,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       };
       openers.set(item.proposal, () => open("focus"));
       const close = () => {
+        releaseForm(key);
         opened.delete(item.proposal);
         wholes.delete(item.proposal);
         markAmending(item.proposal);
@@ -1537,7 +1630,13 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         entry.append(words, note, drop);
         list.append(entry);
       });
-      request.addEventListener("click", () => open("focus"));
+      // again, it closes the form, unless something's written in it, when it
+      // goes to it
+      request.addEventListener("click", () => {
+        if (!form.isConnected) open("focus");
+        else if (input.value.trim() !== "") input.focus({ preventScroll: true });
+        else close();
+      });
       discard.addEventListener("click", () => {
         batches.delete(item.proposal);
         showProposals(showing);
@@ -1561,6 +1660,10 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         // it was
         if (opened.has(item.proposal)) open("leave");
       };
+      // its buttons, off while a verdict on it is on its way
+      const buttons = [...row.querySelectorAll("button"), ...form.querySelectorAll("button")];
+      buttonsOf.set(item.proposal, buttons);
+      if (pending.has(item.proposal)) for (const button of buttons) button.disabled = true;
       return { node: zone, placed, extra };
     };
     // how tall some of an overlay's contents are, laid out out of sight at
@@ -1607,13 +1710,13 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
             );
       const [first, ...rest] = operations;
       if (first === undefined) return;
-      hooks.review(item.task, item.proposal, { kind: "edit", operations: [first, ...rest] });
+      review(item, { kind: "edit", operations: [first, ...rest] });
     };
     // Changes sent back as one request: those on its words as passages, those
     // on the whole of it as what else should change.
     const sendBack = (item: _Open_Proposal_, changes: Array<_Amendment_Review_>) => {
       const whole = changes.filter((change) => change.words === "").map((change) => change.note);
-      hooks.review(item.task, item.proposal, {
+      review(item, {
         kind: "request",
         feedback: whole.join("\n"),
         passages: changes.filter((change) => change.words !== ""),
@@ -1663,7 +1766,10 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const linesShown = new Map<_Id_Proposal_, Array<HTMLElement>>();
     const markAmending = (proposal: _Id_Proposal_) => {
       const amending = (batches.get(proposal) ?? []).length > 0 || opened.has(proposal) || changing.some((open) => open.item.proposal === proposal);
-      for (const lines of linesShown.get(proposal) ?? []) lines.classList.toggle(styles.amending, amending);
+      for (const lines of linesShown.get(proposal) ?? []) {
+        lines.classList.toggle(styles.amending, amending);
+        for (const words of lines.querySelectorAll<HTMLElement>(`.${styles.editableText}`)) words.contentEditable = amending ? "false" : "plaintext-only";
+      }
     };
     const fitChange = (host: HTMLElement) => {
       changeInput.style.height = "auto";
@@ -1673,12 +1779,14 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       if (margin !== undefined) besideForm(margin, changeBox, changeSlice);
     };
     const closeChange = () => {
+      releaseForm("change");
       const [open] = changing;
       changing = [];
       changeBox.remove();
       changeSlice.remove();
       for (const each of marking) each.writing.clear();
       if (open === undefined) return;
+      holders.get(open.item.proposal)?.();
       fitChange(open.host);
       markAmending(open.item.proposal);
     };
@@ -1709,6 +1817,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     changeInput.addEventListener("input", () => {
       const [open] = changing;
       if (open !== undefined) fitChange(open.host);
+      if (open !== undefined) holders.get(open.item.proposal)?.();
     });
     changeInput.addEventListener("keydown", (event) => {
       event.stopPropagation();
@@ -1728,7 +1837,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       route: "send" | "batch",
       under: Array<Element>,
     ) => {
+      if (makeRoom("change") === "kept") return;
       closeChange();
+      holdForm({ key: "change", written: () => changeInput.value, focus: () => changeInput.focus({ preventScroll: true }), close: closeChange });
       changing = [{ item, host, found, route }];
       markAmending(item.proposal);
       for (const each of marking) for (const range of ranges) each.writing.add(range);
@@ -1873,7 +1984,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         // back together
         const drafting = (batches.get(item.proposal) ?? []).length > 0;
         const discard = {
-          label: "doctor: discard the draft",
+          label: "doctor: discard the amendments",
           run: () => {
             batches.delete(item.proposal);
             showProposals(showing);
@@ -1884,7 +1995,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
           openMenu(
             event,
             drafting
-              ? [{ label: "doctor: add an amendment for this proposal to the draft", run: whole }, discard]
+              ? [{ label: "doctor: add an amendment for this proposal", run: whole }, discard]
               : [
                   { label: "doctor: quick amendment for this proposal", run: () => openers.get(item.proposal)?.() },
                   { label: "doctor: draft amendments for this proposal", run: whole },
@@ -1895,7 +2006,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         openMenu(
           event,
           drafting
-            ? [{ label: "doctor: add to the draft", run: () => openChange(item, lines, found, ranges, "batch", under) }, discard]
+            ? [{ label: "doctor: add to the amendments", run: () => openChange(item, lines, found, ranges, "batch", under) }, discard]
             : [
                 { label: "doctor: quick amendment", run: () => openChange(item, lines, found, ranges, "send", under) },
                 { label: "doctor: draft amendments", run: () => openChange(item, lines, found, ranges, "batch", under) },
@@ -1992,8 +2103,10 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       for (const [draft, real] of minted) drafts.set(real, draft);
       // its words can be edited while it waits for review, or once it's
       // accepted; not while it's revised, or once it's rejected
+      // its words can't be edited while amendments to them are drafted, as
+      // they say where they are in the words as they were
       const editing: _Editing_Lines_ =
-        item.state === "proposed" || item.state === "accepted"
+        (item.state === "proposed" || item.state === "accepted") && (batches.get(item.proposal) ?? []).length === 0 && !opened.has(item.proposal)
           ? { kind: "editable", textual: previewed.textual, save: (holder, next) => saveEdit(shown, item, drafts, holder, next) }
           : { kind: "fixed" };
       // back from revising, what's changed since its round before
@@ -2731,6 +2844,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // form replaces this one, and goes back to the editor unless the focus
   // went elsewhere.
   const closeTask = (how: "back" | "away" | "replaced") => {
+    releaseForm("task");
     const [place] = tasking;
     if (place === undefined) return;
     tasking = [];
@@ -2811,15 +2925,18 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // selected, it's docked under the bar, across the whole width.
   const openTask = (route: _Route_Form_, about: "selection" | "document") => {
     const [document] = documents;
-    if (document === undefined) return;
+    if (document === undefined || makeRoom("task") === "kept") return;
     const selection = editor.getSelection();
     const selections = editor.getSelections() ?? [];
     const chosen = about === "selection" ? targetsOfSelection() : [];
     const [picked] = selection === null || chosen.length === 0 ? [] : [selection];
     const targets: Array<_Target_Request_> = picked === undefined ? [{ kind: "document", document: document.id }] : chosen;
     closeTask("replaced");
+    holdForm({ key: "task", written: () => taskInput.value, focus: () => taskInput.focus({ preventScroll: true }), close: () => closeTask("away") });
     makeButton.textContent = route === "quick" ? "Start task" : "Add to draft";
-    taskHint.textContent = route === "quick" ? "quick task, started now" : "added to the task you're drafting";
+    // starting it parks the task active now, so it says so
+    const parking = activeTask.map((task) => `, parking ${task}`).join("");
+    taskHint.textContent = route === "quick" ? `quick task, started now${parking}` : "added to the task you're drafting";
     taskInput.placeholder = picked === undefined ? "What should change in this document?" : "What should change here?";
     taskBox.classList.remove(styles.taskInvalid);
     if (picked !== undefined) {
@@ -3121,8 +3238,18 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     track,
     decorate,
     mark,
-    proposals: showProposals,
+    // new proposals, after a verdict or anything else, answer what was on its way
+    proposals: (open) => {
+      if (open !== received) {
+        received = open;
+        pending.clear();
+      }
+      showProposals(open);
+    },
     focus: focusOn,
+    active: (task) => {
+      activeTask = task;
+    },
     requestForDocument: (route) => openTask(route, "document"),
     revealProposals: () => {
       const [line] = proposalAt;

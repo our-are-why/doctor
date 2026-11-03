@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { latestBrief, nameOf } from "../shared/brief.ts";
-import type { _Id_Document_, _Target_Request_, _Task_Doctor_ } from "../shared/domain.next.ts";
+import type { _Id_Document_, _Id_Task_, _Target_Request_, _Task_Doctor_ } from "../shared/domain.next.ts";
 import type { _DASHBOARD_Config__Webview_, _Focus_Drafting_, _Listed_Document_ } from "../shared/protocol.ts";
 import { ConnectionStatus } from "./ConnectionStatus.tsx";
 import styles from "./styles/Dashboard.module.css";
@@ -68,6 +68,10 @@ export function Dashboard({ config }: { config: _DASHBOARD_Config__Webview_ }) {
     if (connection.kind === "open") send({ kind: "watch" });
   }, [connection.kind, send]);
 
+  // the task active now, which starting another parks
+  const [activeNow] = tasks.filter((task) => task.state === "working" || task.state === "reviewing");
+  const parks = (task: _Id_Task_) => (activeNow === undefined || activeNow.id === task ? "" : ` · parks ${activeNow.id}`);
+
   const makeTask = () => {
     const written = typed.trim();
     if (written === "") {
@@ -123,7 +127,9 @@ export function Dashboard({ config }: { config: _DASHBOARD_Config__Webview_ }) {
               makeTask();
             }}
           />
-          <p className={styles.detail}>it reaches every document, unless its words say which</p>
+          <p className={styles.detail}>
+            it reaches every document, unless its words say which{drafting.length === 0 && activeNow !== undefined ? `; starting it parks ${activeNow.id}` : ""}
+          </p>
           <div className={styles.line}>
             <span className={styles.instruction} />
             <button className={styles.button} type="button" onClick={() => setMaking("closed")}>
@@ -171,6 +177,7 @@ export function Dashboard({ config }: { config: _DASHBOARD_Config__Webview_ }) {
                 {task.state === "draft" || task.state === "parked" ? (
                   <button className={styles.button} type="button" onClick={() => send({ kind: "activate", task: task.id })}>
                     {task.state === "draft" ? "Start" : "Make active"}
+                    {parks(task.id)}
                   </button>
                 ) : null}
                 {task.state === "draft" ? (
@@ -178,7 +185,8 @@ export function Dashboard({ config }: { config: _DASHBOARD_Config__Webview_ }) {
                     Discard
                   </button>
                 ) : null}
-                {open ? (
+                {/* an active task completes once nothing's waiting for review */}
+                {open && !(active && task.proposals.some((proposal) => proposal.state === "proposed")) ? (
                   <button className={styles.button} type="button" onClick={() => send({ kind: "complete", task: task.id })}>
                     Complete
                   </button>

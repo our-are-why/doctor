@@ -81,6 +81,13 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
     for (const view of views.current) view.focus(session.drafting);
   }, [session.drafting, session.arrivals]);
 
+  // the task active now, which a quick task from the editor parks
+  useEffect(() => {
+    const [status] = session.status;
+    const active = status !== undefined && (status.state === "working" || status.state === "reviewing") ? [status.task] : [];
+    for (const view of views.current) view.active(active);
+  }, [session.status]);
+
   const [focus] = session.drafting;
   const draft = focus?.kind === "draft" ? focus : undefined;
   const drafted =
@@ -116,7 +123,10 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
     keepCard();
     if (!(event.currentTarget instanceof HTMLElement)) return;
     const box = event.currentTarget.getBoundingClientRect();
-    setCard([{ left: Math.max(Math.min(box.left - 12, window.innerWidth - 448), 8), top: box.bottom + 6 }]);
+    // its left edge under the left edge of the task's mark, where the item starts
+    const mark = event.currentTarget.querySelector(`.${styles.taskMark}`);
+    const left = mark === null ? box.left : mark.getBoundingClientRect().left;
+    setCard([{ left: Math.max(Math.min(left, window.innerWidth - 448), 8), top: box.bottom + 6 }]);
   };
   const hover = { onMouseEnter: showCard, onMouseLeave: hideCard };
   // The task by its id, its overview a hover away, and before it a mark of
@@ -256,7 +266,7 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
             </button>
             {draft === undefined ? null : (
               <button className={styles.barPrimary} type="button" onClick={() => session.start(draft.task)}>
-                Start task
+                {task !== undefined && (task.state === "working" || task.state === "reviewing") ? `Start task · parks ${task.task}` : "Start task"}
               </button>
             )}
             <button className={styles.barButton} type="button" onClick={() => session.stopDrafting()}>

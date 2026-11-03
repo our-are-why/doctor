@@ -48,6 +48,7 @@ import {
   completeTask,
   createDraft,
   createTask,
+  type _Activated_Task_,
   discardDraft,
   dropRequest,
   agentsTurn,
@@ -367,8 +368,15 @@ async function makeTask(message: _TASK_Message__Client_, send: _Send_Session_): 
   if (place === undefined) return;
   const unknown = unknownIn(message.targets);
   if (unknown.length > 0) return announce([`there's no document ${unknown.join(", ")} in the workspace`], [send]);
-  await createTask(place, { text: message.text, overlay: [] }, message.targets);
+  const made = await createTask(place, { text: message.text, overlay: [] }, message.targets);
+  tellParked(made);
   await announce([], [send]);
+}
+
+// says which task was parked to make another active, once it's done
+function tellParked(made: _Activated_Task_): void {
+  if (made.parked.length === 0) return;
+  void vscode.window.showInformationMessage(`doctor: ${made.task.id} is active now; ${made.parked.join(", ")} is parked, to make active again from the dashboard`);
 }
 
 // A request for the task being drafted: the first makes the draft, and each
@@ -434,7 +442,7 @@ async function newTaskForFiles(clicked: unknown, selected: unknown): Promise<voi
     ignoreFocusOut: true,
   });
   if (instruction === undefined || instruction.trim() === "") return;
-  await createTask(place, { text: instruction.trim(), overlay: [] }, targets);
+  tellParked(await createTask(place, { text: instruction.trim(), overlay: [] }, targets));
   await announce([], []);
 }
 
@@ -442,6 +450,7 @@ async function activateTask(task: _Id_Task_, send: _Send_Session_): Promise<void
   const [place] = tasksPlace();
   if (place === undefined) return;
   const outcome = await makeActive(place, task);
+  if (outcome.kind === "done") tellParked(outcome.value);
   if (outcome.kind === "done" && draftingTask(task)) draftOn([]);
   return announce(outcome.kind === "refused" ? outcome.issues : [], [send]);
 }

@@ -81,6 +81,21 @@
   font-family: var(--vscode-editor-font-family, monospace), monospace;
 }
 
+/* a task's item underlined on hover under its words, its id, not its mark */
+.statusItem.taskItem {
+  text-decoration: none;
+}
+
+.statusItem.taskItem > :not(.taskMark) {
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+}
+
+.statusItem.taskItem:hover > :not(.taskMark) {
+  text-decoration-color: currentColor;
+}
+
 /* the mark before the id, in a slot as wide as the widest of them */
 .taskMark {
   align-items: center;
@@ -796,6 +811,11 @@
   outline: none;
 }
 
+/* not while it's being amended */
+.amending .editableText {
+  cursor: inherit;
+}
+
 /* a line wraps at the editor's width, as the document's lines do */
 .proposalLine {
   overflow-wrap: anywhere;
@@ -880,6 +900,13 @@
   padding: 0.15rem 0.6rem;
 }
 
+/* off while a verdict on its proposal is on its way */
+.proposalAccept:disabled,
+.proposalButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .proposalAccept {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
@@ -888,6 +915,39 @@
 .proposalButton {
   background: var(--vscode-button-secondaryBackground);
   color: var(--vscode-button-secondaryForeground);
+}
+
+/* Amend's arrow, a touch bigger than its word, so it reads as opening
+   something; purple, as the form is, only once that's open */
+.amendArrow {
+  display: inline-block;
+  font-size: 1.25em;
+  line-height: 0;
+  margin-left: 0.35em;
+}
+
+/* Amend while the form it opens is open under it: pressed, in the form's
+   own band, a tight purple glow round it, its arrow purple, and the form's
+   notch, at the form's top, --reach below it, pointing back up at it */
+.amendOpen {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 6%, var(--vscode-editor-background));
+  box-shadow: 0 0 2px 1px color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 70%, transparent);
+  position: relative;
+}
+
+.amendOpen .amendArrow {
+  color: var(--vscode-charts-purple, #b180d7);
+}
+
+.amendOpen::after {
+  border: 6px solid transparent;
+  border-bottom-color: color-mix(in srgb, var(--vscode-editor-foreground) 6%, var(--vscode-editor-background));
+  border-top: 0;
+  content: "";
+  left: calc(50% - 6px);
+  pointer-events: none;
+  position: absolute;
+  top: calc(100% + var(--reach, 0px) - 6px);
 }
 
 /* the lines a rejected or revised proposal targets, folded away: shaded a
