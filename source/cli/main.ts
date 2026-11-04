@@ -38,9 +38,12 @@ and comes back to you if any is sent back for changes.
                            the "words", the text "within" which they are, "at" where in
                            it they start (in characters, as the same words can be there
                            more than once), and the "note".
-                           One edited by the person reviewing it has "edited", its
-                           operations as they left them: revise from those, keeping
-                           their edits. Revise it as the same proposal, with doctor propose
+                           Every proposal shows its "operations" as they stand now,
+                           which may be the person's own: a proposal of theirs, made
+                           by editing while the task's active, or an edit of theirs to
+                           one of yours. Build alongside each, never undoing one, and
+                           revise from them as they stand. Revise it as the same
+                           proposal, with doctor propose
   doctor task              the active task: its "requests", each with its "text" and
                            "targets", each target shown as it is now: a "document"
                            with all its "blocks", a "node", or a "passage" of a text

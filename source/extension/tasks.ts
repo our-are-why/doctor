@@ -47,6 +47,7 @@ import { mintId } from "../shared/id.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
 import { parse, parseOwn, type _Result_Parse_ } from "../shared/parse.ts";
 import { latestBrief, progressOf } from "../shared/brief.ts";
+import { proposalsOfEdits } from "../shared/edits.ts";
 import { realize } from "../shared/proposals.ts";
 import type { _Listed_Document_ } from "../shared/protocol.ts";
 import {
@@ -259,7 +260,10 @@ export function agentsTurn(tasks: Array<_Task_Doctor_>): Array<_WORKING_Task__Do
   return tasks.filter(
     (task): task is _WORKING_Task__Doctor_ =>
       task.state === "working" &&
-      (task.proposals.some((proposal) => proposal.state === "revising") ||
+      // till the agent first hands it over, it's at work on it, whatever
+      // waits for review, as the person's own edits may
+      (task.submissions.length === 0 ||
+        task.proposals.some((proposal) => proposal.state === "revising") ||
         task.proposals.every((proposal) => proposal.state !== "proposed") ||
         newRequests(task).length > 0),
   );
@@ -560,6 +564,44 @@ export function submit(
     const summaries = summary.text === "" ? task.summaries : summarized(task.summaries, { kind: "task" }, summary, now);
     const submitted = await settle(place, { ...task, state: "reviewing", submissions: [...task.submissions, submission], summaries }, now);
     return done({ task: submitted.task, value: { state: submitted.task.state, issues: submitted.issues } });
+  });
+}
+
+// Your edits while a task is active, every one of them, in any document,
+// belong to it, as a pull request's do: they're proposals in it, divided as
+// the agent's are, each waiting for review like any, its round yours,
+// answering the brief as it is, checked against the document as it is. The
+// file's left as it is.
+export function proposeEdits(
+  place: _Place_Tasks_,
+  id: _Id_Task_,
+  file: string,
+  operations: Array<_Operation_Change_>,
+): Promise<_Outcome_Task_<{ document: _Document_Doctor_; proposals: Array<_Id_Proposal_> }>> {
+  return updateTask(place, id, async (task) => {
+    if (!isActive(task)) return refuse(`task ${id} is ${task.state}, so it takes no edits`);
+    const read = await readDocument(file);
+    if (read.kind === "rejected") return { kind: "refused", issues: read.issues };
+    const divided = proposalsOfEdits(read.value, operations, () => randomBytes(10));
+    if (divided.kind === "refused") return refuse(`that edit can't be a proposal: ${divided.issue}`);
+    if (divided.proposals.length === 0) return done({ task, value: { document: read.value, proposals: [] } });
+    const base = await storeVersion(place.data, read.value);
+    const written = stamp("human");
+    const answering = latestBrief(task).number;
+    const made = divided.proposals.map(
+      (each): _PROPOSED_Proposal__Task_ => ({
+        state: "proposed",
+        id: mintId(proposalIdSchema, randomBytes(10)),
+        document: read.value.id,
+        rounds: [
+          {
+            kind: "standing",
+            version: { written, base, answering, answers: [], operations: each, rationale: { text: "", overlay: [] }, changes: { text: "", overlay: [] } },
+          },
+        ],
+      }),
+    );
+    return done({ task: { ...task, proposals: [...task.proposals, ...made] }, value: { document: read.value, proposals: made.map((each) => each.id) } });
   });
 }
 

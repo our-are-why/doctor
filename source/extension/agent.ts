@@ -56,9 +56,11 @@ function proposalSummary(proposal: _Proposal_Task_) {
         }
       : {}),
     ...(proposal.state === "rejected" || proposal.state === "withdrawn" ? reasonOf(proposal.reason) : {}),
-    // edited by the person reviewing it, its operations as they left them,
-    // to revise from rather than what was proposed before
-    ...(last.version.written.by === "human" ? { edited: last.version.operations } : {}),
+    // its operations as they stand now, whoever wrote them: the agent, the
+    // person reviewing it, editing it, or making it, as an edit of theirs
+    // while the task's active is; each, the agent builds alongside, and
+    // revises from, never undoing one
+    operations: last.version.operations,
   };
 }
 
@@ -141,12 +143,12 @@ function nextStep(task: _WORKING_Task__Doctor_): string {
   }
   const revising = task.proposals.filter((proposal) => proposal.state === "revising").map((proposal) => proposal.id);
   if (revising.length > 0) {
-    return `revise proposal ${revising.join(", ")} as its feedback and passages ask, from its "edited" operations where it has them, keeping those edits, with \`doctor propose\` for its document against the base shown here, its "changes" saying what this round changed, and its "rationale" if why it's this change has changed; once nothing's left to revise, \`doctor submit\`, with \`--summary "<where the task stands as a whole>"\` only if that's changed (what this round did belongs in its "changes", not the summary), then \`doctor wait\``;
+    return `revise proposal ${revising.join(", ")} as its feedback and passages ask, from its "operations" as they stand now, which may be the person's own edits, keeping what the feedback doesn't ask to change, with \`doctor propose\` for its document against the base shown here, its "changes" saying what this round changed, and its "rationale" if why it's this change has changed; once nothing's left to revise, \`doctor submit\`, with \`--summary "<where the task stands as a whole>"\` only if that's changed (what this round did belongs in its "changes", not the summary), then \`doctor wait\``;
   }
-  if (task.proposals.length === 0) {
-    return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, each naming the requests it answers and saying why in its \"rationale\"; a request without targets reaches every document, which `doctor documents` lists; summarize each document you change with `doctor summarize --document <id> \"<what changes there, as its effect on the document, not a list of the proposals>\"`; then `doctor submit --summary \"<where the task stands as a whole: what it does, or why nothing needed changing>\" --headline \"<what it does or means, in one short line, without counts or states, which doctor shows>\"` to hand them over, and `doctor wait`";
+  if (task.submissions.length === 0) {
+    return "answer the task's requests with `doctor propose` (`doctor help` shows how), one proposal per independent change, alongside any proposal already in the task, which may be the person's own and stands as it is, each naming the requests it answers and saying why in its \"rationale\"; a request without targets reaches every document, which `doctor documents` lists; summarize each document you change with `doctor summarize --document <id> \"<what changes there, as its effect on the document, not a list of the proposals>\"`; then `doctor submit --summary \"<where the task stands as a whole: what it does, or why nothing needed changing>\" --headline \"<what it does or means, in one short line, without counts or states, which doctor shows>\"` to hand them over, and `doctor wait`";
   }
-  return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it; then `doctor submit`, with `--summary \"<where the task stands as a whole>\"` if that's changed, and `doctor wait`";
+  return "every proposal is decided: propose more with `doctor propose` against the base shown here if the task needs it, alongside those there, which may be the person's own, never undoing one; then `doctor submit`, with `--summary \"<where the task stands as a whole>\"` if that's changed, and `doctor wait`";
 }
 
 // what an agent is waiting on while it's the human's turn

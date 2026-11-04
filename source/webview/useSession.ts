@@ -59,6 +59,11 @@ export interface _Session_Webview_ {
   arrivals: number;
   perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>, urgency: _Urgency_Session_) => void;
   leave: () => void;
+  // While a task is active, what's typed is held, not sent after a pause,
+  // till the part it's in is left, when it's released: sent, to be the
+  // proposals it comes to.
+  hold: (how: "hold" | "send") => void;
+  release: () => void;
   // the proposals waiting for review on this file, and what's wrong with any
   open: Array<_Open_Proposal_>;
   openProblems: Array<string>;
@@ -192,8 +197,21 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     setLoad(editingLoad(result.session));
     setProblems([]);
     window.clearTimeout(timer.current);
+    if (holding.current === "hold") return;
     if (urgency === "now") setDue("due");
     else timer.current = window.setTimeout(() => setDue("due"), pause);
+  };
+
+  const holding = useRef<"hold" | "send">("send");
+  const release = () => {
+    window.clearTimeout(timer.current);
+    setDue("due");
+  };
+  // no longer held, what was is sent
+  const hold = (how: "hold" | "send") => {
+    const was = holding.current;
+    holding.current = how;
+    if (was === "hold" && how === "send") release();
   };
 
   const leave = () => {
@@ -224,6 +242,8 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     arrivals,
     perform,
     leave,
+    hold,
+    release,
     open,
     openProblems,
     makeTask,

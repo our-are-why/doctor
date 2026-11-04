@@ -17,11 +17,12 @@ import type {
   _Target_Request_,
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
-import { parseOwn } from "../shared/parse.ts";
+import { mintId } from "../shared/id.ts";
+import { parse, parseOwn } from "../shared/parse.ts";
 import { contentStart, continuedPattern, fencePattern, project, startsBlock, type _Projection_ } from "../shared/projection.ts";
-import { realize, realizeInto, withNodeText } from "../shared/proposals.ts";
+import { findIn, realize, realizeInto, withAdded, withNodeText, withoutNode } from "../shared/proposals.ts";
 import type { _Amendment_Review_, _Open_Proposal_, _Verdict_Review_, _View_Drafting_ } from "../shared/protocol.ts";
-import { changeIdSchema, nodeIdSchema, offsetSchema } from "../shared/schema.ts";
+import { changeIdSchema, draftIdSchema, nodeIdSchema, offsetSchema } from "../shared/schema.ts";
 import { readTarget, writeTarget } from "../shared/target.ts";
 import {
   changedRuns,
@@ -35,7 +36,7 @@ import {
   type _Change_Text_,
   type _Segment_Text_,
 } from "../shared/text.ts";
-import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
+import { childrenOf, idsWithin, indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
 import * as monaco from "./monaco.ts";
 import "./styles/monaco.css";
 import styles from "./styles/TextEditor.module.css";
@@ -45,6 +46,8 @@ export interface _Hooks_View_ {
   edited: (lines: Array<string>, owners: Array<Array<_Id_Node_>>) => void;
   perform: (act: (document: _Document_Doctor_) => Array<_Operation_Change_>) => void;
   leave: () => void;
+  // what's held, sent, the part it's in left
+  release: () => void;
   // a quick task: one request, started at once
   makeTask: (targets: Array<_Target_Request_>, text: string) => void;
   // drafting: a task built up from requests, started when it's ready
@@ -68,6 +71,8 @@ export interface _View_Text_ {
   focus: (drafting: Array<_View_Drafting_>) => void;
   // the task active now, if any, which starting another parks
   active: (task: Array<_Id_Task_>) => void;
+  // the document as its file has it, and what's typed and held, not sent
+  held: (trunk: _Document_Doctor_, operations: Array<_Operation_Change_>) => void;
   // the form for a request about the whole document, docked under the bar
   requestForDocument: (route: _Route_Form_) => void;
   // scrolls to the first proposal waiting for review
@@ -279,7 +284,17 @@ const plainLine = (content: string): _Line_Proposal_ => ({ content, texts: [], c
 // can, and what's done with one edited
 type _Editing_Lines_ =
   | { kind: "fixed" }
-  | { kind: "editable"; textual: (holder: _Holder_Text_) => "text" | "other"; save: (holder: _Holder_Text_, next: _Text_Doctor_) => void };
+  | {
+      kind: "editable";
+      textual: (holder: _Holder_Text_) => "text" | "other";
+      save: (holder: _Holder_Text_, next: _Text_Doctor_) => void;
+      // a block of a run of new ones, which Enter adds to, and Backspace in,
+      // emptied, takes out of, and the draft id it has in its proposal
+      adds: (holder: _Holder_Text_) => "adds" | "fixed";
+      split: (holder: _Holder_Text_, before: _Text_Doctor_, after: _Text_Doctor_) => void;
+      drop: (holder: _Holder_Text_) => void;
+      draftOf: (holder: _Holder_Text_) => Array<_DRAFT_Id__Node_>;
+    };
 
 // What's changed in a line since its proposal's round before: in its words,
 // nothing, all of them or some; where words were taken out of it, at a point
@@ -431,6 +446,81 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       const entry = best[line];
       return entry === undefined ? [] : [entry.id];
     });
+  };
+
+  // What's typed while a task is active, held till the part it's in is left:
+  // a block the file has, or a run of new blocks side by side, so going on
+  // from one new block to the next isn't leaving; nor is going between a
+  // block and the run started from its end, which are where you're at work
+  // together, though they're proposals apart. A blank line is no part, so
+  // passing through one isn't leaving; a line with no owner of its own, as a
+  // line of code is, is its block's above. Held, a part's lines are marked
+  // purple in the margin, as becoming a proposal of yours.
+  let trunkIds = new Set<string>();
+  let heldNow: Array<_Operation_Change_> = [];
+  let area: Array<{ key: string; anchor: Array<string> }> = [];
+  const partOf = (line: number): Array<{ key: string; anchor: Array<string> }> => {
+    if (line === 1) return [{ key: "title", anchor: [] }];
+    if (model.getLineContent(line).trim() === "") return [];
+    const owners = ownersNow();
+    let above = line - 1;
+    while (above > 0 && (owners[above] ?? []).length === 0) above -= 1;
+    const [owner] = owners[above] ?? [];
+    if (owner === undefined) return [];
+    if (trunkIds.has(owner)) return [{ key: `block ${owner}`, anchor: [] }];
+    const [shown] = documents;
+    if (shown === undefined) return [];
+    const index = indexNodes(shown.content);
+    // the new block it's in that's under one that was there, and the run of
+    // new blocks side by side it's in
+    let top = owner;
+    for (let parent = index.get(top)?.parent; parent?.kind === "node" && !trunkIds.has(parent.node); parent = index.get(top)?.parent) top = parent.node;
+    const parent = index.get(top)?.parent;
+    const holder = parent?.kind === "node" ? index.get(parent.node)?.node : undefined;
+    const siblings = parent === undefined ? [] : parent.kind === "body" ? shown.content.children : holder === undefined ? [] : childrenOf(holder);
+    const at = siblings.findIndex((sibling) => sibling.id === top);
+    let first = at;
+    while (first > 0 && !trunkIds.has(siblings[first - 1]?.id ?? "")) first -= 1;
+    const before = siblings[first - 1];
+    return [{ key: `run ${siblings[first]?.id ?? top}`, anchor: before === undefined ? [] : [`block ${before.id}`] }];
+  };
+  const leaveIfLeft = (line: number) => {
+    const [part] = partOf(line);
+    if (part === undefined) return;
+    const keys = area.map((each) => each.key);
+    if (keys.includes(part.key)) return;
+    // a run started from a block in the area, or a block a run in it was
+    // started from, is still where you're at work
+    const joins = part.anchor.some((anchor) => keys.includes(anchor)) || area.some((each) => each.anchor.includes(part.key));
+    if (joins) {
+      area = [...area, part];
+      return;
+    }
+    const left = area.length > 0;
+    area = [part];
+    if (left && heldNow.length > 0) hooks.release();
+  };
+  const heldMarks = editor.createDecorationsCollection();
+  const markHeld = () => {
+    const ids = new Set<string>(
+      heldNow.flatMap((operation) =>
+        operation.kind === "insert"
+          ? idsWithin(operation.subtree)
+          : operation.kind === "write" || operation.kind === "style"
+            ? [operation.holder.kind === "title" ? "title" : operation.holder.node]
+            : operation.kind === "delete"
+              ? []
+              : [operation.node],
+      ),
+    );
+    const owners = ownersNow();
+    const lines = owners.flatMap((owner, at) => ((at === 0 && ids.has("title")) || owner.some((id) => ids.has(id)) ? [at + 1] : []));
+    heldMarks.set(lines.map((line) => ({ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, marginClassName: styles.targetedGutter } })));
+  };
+  const held = (trunk: _Document_Doctor_, operations: Array<_Operation_Change_>) => {
+    trunkIds = new Set(indexNodes(trunk.content).keys());
+    heldNow = operations;
+    markHeld();
   };
 
   const track = (owners: Array<Array<_Id_Node_>>) => {
@@ -1005,6 +1095,8 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   let showing: Array<_Open_Proposal_> = [];
   // the proposal's words being edited, if any, and what to draw once they're not
   let editingWords: Array<HTMLElement> = [];
+  // the block of a run of new ones to go on in once it's drawn, and where in it
+  let focusDraft: Array<{ draft: _DRAFT_Id__Node_; at: "start" | "end" }> = [];
   let deferred: Array<Array<_Open_Proposal_>> = [];
   let drawnWidth = 0;
   editor.onDidLayoutChange((info) => {
@@ -1276,10 +1368,15 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     // the words changed so far are marked, as tight as they run, compared
     // word by word with what the proposal had; once saved, they're marked as
     // any round's changes are.
-    const makeEditable = (words: HTMLElement, held: { holder: _Holder_Text_; text: _Text_Doctor_ }, save: (next: _Text_Doctor_) => void) => {
+    const makeEditable = (
+      words: HTMLElement,
+      held: { holder: _Holder_Text_; text: _Text_Doctor_ },
+      save: (next: _Text_Doctor_) => void,
+      run: { adds: "adds" | "fixed"; split: (before: _Text_Doctor_, after: _Text_Doctor_) => void; drop: () => void },
+    ) => {
       words.contentEditable = "plaintext-only";
       let working = held.text;
-      let leaving: "save" | "revert" = "save";
+      let leaving: "save" | "revert" | "done" = "save";
       const current = () => rewrite(working, words.textContent ?? "").text;
       const markEdited = () => {
         const now = current();
@@ -1295,8 +1392,37 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         editingWords = [words];
         leaving = "save";
       });
+      // where the caret is in the words, in their units
+      const caretAt = () => {
+        const selection = window.getSelection();
+        const [range] = selection === null || selection.rangeCount === 0 ? [] : [selection.getRangeAt(0)];
+        if (range === undefined || !words.contains(range.startContainer)) return (words.textContent ?? "").length;
+        const measure = window.document.createRange();
+        measure.setStart(words, 0);
+        measure.setEnd(range.startContainer, range.startOffset);
+        return measure.toString().length;
+      };
       words.addEventListener("keydown", (event) => {
         event.stopPropagation();
+        // in a run of new blocks, Enter goes on in a new block after this,
+        // what's after the caret with it
+        if (event.key === "Enter" && !event.shiftKey && run.adds === "adds") {
+          event.preventDefault();
+          const now = current();
+          const at = caretAt();
+          leaving = "done";
+          run.split(rewrite(now, now.text.slice(0, at)).text, rewrite(now, now.text.slice(at)).text);
+          words.blur();
+          return;
+        }
+        // and Backspace in one emptied takes it out
+        if (event.key === "Backspace" && run.adds === "adds" && (words.textContent ?? "") === "") {
+          event.preventDefault();
+          leaving = "done";
+          run.drop();
+          words.blur();
+          return;
+        }
         if (event.key === "Enter" || event.key === "Escape") {
           event.preventDefault();
           leaving = event.key === "Enter" ? "save" : "revert";
@@ -1367,7 +1493,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         }
         const [held] = texts;
         const body = held === undefined || held.start < at ? "" : content.slice(held.start);
-        if (held !== undefined && body !== "" && body === held.text.text) {
+        // a text with words in it, or an empty one that can be edited, as a
+        // block Enter's just added is
+        if (held !== undefined && body === held.text.text && (body !== "" || editing.kind === "editable")) {
           shownLine.append(content.slice(at, held.start));
           const fresh: Array<_Change_Text_> =
             lately.words.kind === "some"
@@ -1379,7 +1507,27 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
           const words = editable.length > 0 ? element("span", styles.editableText, "") : shownLine;
           drawText(words, held.text, changes, fresh, lately.removed);
           for (const each of editable) {
-            makeEditable(words, held, (next) => each.save(held.holder, next));
+            makeEditable(words, held, (next) => each.save(held.holder, next), {
+              adds: each.adds(held.holder),
+              split: (before, after) => each.split(held.holder, before, after),
+              drop: () => each.drop(held.holder),
+            });
+            // the block Enter added, or the one before the one Backspace took
+            // out, the caret going on in it
+            const [wanted] = focusDraft;
+            const [draft] = each.draftOf(held.holder);
+            if (wanted !== undefined && draft === wanted.draft) {
+              focusDraft = [];
+              whenDrawn(() => {
+                words.focus({ preventScroll: true });
+                const range = window.document.createRange();
+                range.selectNodeContents(words);
+                range.collapse(wanted.at === "start");
+                const selection = window.getSelection();
+                selection?.removeAllRanges();
+                selection?.addRange(range);
+              });
+            }
             shownLine.append(words);
           }
           // a heading's rule from the end of its words, as the document has
@@ -1757,6 +1905,87 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       const [first, ...rest] = operations;
       if (first === undefined) return;
       review(item, { kind: "edit", operations: [first, ...rest] });
+    };
+    // A run of new blocks gone on with from inside it: what's after the caret
+    // in a new block after it, of its kind, a list item in its list, a
+    // paragraph after a paragraph, or first under a heading or a quote's
+    // reference; or a block emptied taken out, but a run's last.
+    const runOf = (item: _Open_Proposal_, drafts: Map<_Id_Node_, _DRAFT_Id__Node_>, holder: _Holder_Text_) => {
+      const draft = holder.kind === "node" ? drafts.get(holder.node) : undefined;
+      const at = draft === undefined ? -1 : item.operations.findIndex((operation) => operation.kind === "insert" && findIn(operation.subtree, draft).length > 0);
+      const operation = item.operations[at];
+      return draft === undefined || operation === undefined || operation.kind !== "insert" ? [] : [{ draft, at, operation }];
+    };
+    // what was placed after a block, placed after another instead
+    const placedAfter = (operations: Array<_Operation_Change_<_DRAFT_Id__Node_>>, was: _DRAFT_Id__Node_, now: _Position_Operation_<_DRAFT_Id__Node_>) =>
+      operations.map((operation): _Operation_Change_<_DRAFT_Id__Node_> => {
+        if (operation.kind === "insert" && operation.at.kind === "after" && operation.at.sibling === was) return { ...operation, at: now };
+        if (operation.kind === "move" && operation.to.kind === "after" && operation.to.sibling === was) return { ...operation, to: now };
+        return operation;
+      });
+    const freshDraft = () => parseOwn(draftIdSchema, `new-${mintId(nodeIdSchema, crypto.getRandomValues(new Uint8Array(10)))}`);
+    const splitAdded = (item: _Open_Proposal_, drafts: Map<_Id_Node_, _DRAFT_Id__Node_>, holder: _Holder_Text_, before: _Text_Doctor_, after: _Text_Doctor_) => {
+      for (const { draft, at, operation } of runOf(item, drafts, holder)) {
+        const [node] = findIn(operation.subtree, draft);
+        if (node === undefined) return;
+        const fresh = freshDraft();
+        const subtree = withNodeText(operation.subtree, draft, before);
+        const paragraph: _Node_Document_<_DRAFT_Id__Node_> = { kind: "paragraph", id: fresh, text: after.text, overlay: after.overlay };
+        const ops = item.operations;
+        const next: Array<_Operation_Change_<_DRAFT_Id__Node_>> =
+          node.kind === "section" || node.kind === "quote"
+            ? ops.map((each, index) => (index === at ? { ...operation, subtree: withAdded(subtree, { kind: "first", parent: draft }, paragraph) } : each))
+            : node.kind === "listItem" && operation.subtree.id !== draft
+              ? ops.map((each, index) =>
+                  index === at
+                    ? { ...operation, subtree: withAdded(subtree, { kind: "after", sibling: draft }, { kind: "listItem", id: fresh, text: after.text, overlay: after.overlay, children: [] }) }
+                    : each,
+                )
+              : node.kind === "paragraph" && operation.subtree.id !== draft
+                ? ops.map((each, index) => (index === at ? { ...operation, subtree: withAdded(subtree, { kind: "after", sibling: draft }, paragraph) } : each))
+                : node.kind === "paragraph" || node.kind === "listItem"
+                  ? [
+                      ...ops.slice(0, at),
+                      { ...operation, subtree },
+                      {
+                        kind: "insert",
+                        at: { kind: "after", parent: operation.at.parent, sibling: draft },
+                        subtree: node.kind === "listItem" ? { kind: "listItem", id: fresh, text: after.text, overlay: after.overlay, children: [] } : paragraph,
+                      },
+                      ...placedAfter(ops.slice(at + 1), draft, { kind: "after", parent: operation.at.parent, sibling: fresh }),
+                    ]
+                  : [];
+        const [first, ...rest] = next;
+        if (first === undefined) return;
+        focusDraft = [{ draft: fresh, at: "start" }];
+        review(item, { kind: "edit", operations: [first, ...rest] });
+      }
+    };
+    const dropAdded = (item: _Open_Proposal_, drafts: Map<_Id_Node_, _DRAFT_Id__Node_>, holder: _Holder_Text_) => {
+      for (const { draft, at, operation } of runOf(item, drafts, holder)) {
+        const ops = item.operations;
+        if (operation.subtree.id !== draft) {
+          const subtree = withoutNode(operation.subtree, draft);
+          if (findIn(subtree, draft).length > 0) return;
+          const [first, ...rest] = ops.map((each, index) => (index === at ? { ...operation, subtree } : each));
+          if (first !== undefined) review(item, { kind: "edit", operations: [first, ...rest] });
+          return;
+        }
+        // a block of its own in the run: what came after it goes where it was
+        const kept = placedAfter(
+          ops.filter((_each, index) => index !== at),
+          draft,
+          operation.at,
+        );
+        const [first, ...rest] = kept;
+        if (first === undefined) return;
+        // the caret goes on at the end of the new block before it, if it's one
+        for (const sibling of operation.at.kind === "after" ? [operation.at.sibling] : []) {
+          const before = parse(draftIdSchema, sibling);
+          if (before.kind === "parsed") focusDraft = [{ draft: before.value, at: "end" }];
+        }
+        review(item, { kind: "edit", operations: [first, ...rest] });
+      }
     };
     // Changes sent back as one request: those on its words as passages, those
     // on the whole of it as what else should change.
@@ -2155,7 +2384,15 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       // they say where they are in the words as they were
       const editing: _Editing_Lines_ =
         (item.state === "proposed" || item.state === "accepted") && (batches.get(item.proposal) ?? []).length === 0 && !opened.has(item.proposal)
-          ? { kind: "editable", textual: previewed.textual, save: (holder, next) => saveEdit(shown, item, drafts, holder, next) }
+          ? {
+              kind: "editable",
+              textual: previewed.textual,
+              save: (holder, next) => saveEdit(shown, item, drafts, holder, next),
+              adds: (holder) => (runOf(item, drafts, holder).length > 0 ? "adds" : "fixed"),
+              split: (holder, before, after) => splitAdded(item, drafts, holder, before, after),
+              drop: (holder) => dropAdded(item, drafts, holder),
+              draftOf: (holder) => (holder.kind === "node" ? [drafts.get(holder.node)].flatMap((each) => (each === undefined ? [] : [each])) : []),
+            }
           : { kind: "fixed" };
       // back from revising, what's changed since its round before
       const since = sinceBefore(shown, item, previewed.all);
@@ -3294,6 +3531,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   editor.onDidChangeCursorPosition((event) => {
     inItem.set(isItem(event.position.lineNumber));
     inHeading.set(isHeading(event.position.lineNumber));
+    leaveIfLeft(event.position.lineNumber);
   });
   editor.onDidBlurEditorText(() => hooks.leave());
   editor.onDidChangeCursorSelection(() => {
@@ -3317,6 +3555,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     active: (task) => {
       activeTask = task;
     },
+    held,
     requestForDocument: (route) => openTask(route, "document"),
     amending: () =>
       showing

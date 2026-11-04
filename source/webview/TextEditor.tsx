@@ -46,6 +46,7 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
       },
       perform: (act) => latest.current.perform(act, "now"),
       leave: () => latest.current.leave(),
+      release: () => latest.current.release(),
       makeTask: (targets, text) => latest.current.makeTask(targets, text),
       beginDrafting: () => latest.current.beginDrafting(),
       addRequest: (targets, text) => latest.current.addRequest(targets, text),
@@ -83,6 +84,20 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
   useEffect(() => {
     for (const view of views.current) view.focus(session.drafting);
   }, [session.drafting, session.arrivals]);
+
+  // While a task is active, what's typed is held till the part it's in is
+  // left, and the view's told what's held, and what's the file's, to tell
+  // a block that's new from one that was there.
+  useEffect(() => {
+    const [status] = session.status;
+    session.hold(status !== undefined && (status.state === "working" || status.state === "reviewing") ? "hold" : "send");
+  }, [session.status]);
+  useEffect(() => {
+    if (session.load.kind !== "editing") return;
+    const [status] = session.status;
+    const holding = status !== undefined && (status.state === "working" || status.state === "reviewing");
+    for (const view of views.current) view.held(session.load.session.confirmed, holding ? session.load.session.unsent : []);
+  }, [session.load, session.status]);
 
   // the task active now, which a quick task from the editor parks
   useEffect(() => {

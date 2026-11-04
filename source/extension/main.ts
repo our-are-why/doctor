@@ -46,6 +46,7 @@ import { lastHeard, presence, serveAgent, wake, whenPresenceChanges } from "./ag
 import { mintToken, startEndpoint, type _Connect_Endpoint_, type _Serve_Endpoint_ } from "./endpoint.ts";
 import {
   accept,
+  activeTask,
   addRequest,
   cancelTask,
   completeTask,
@@ -61,6 +62,7 @@ import {
   readTask,
   reject,
   editProposal,
+  proposeEdits,
   reopen,
   requestChanges,
   steer,
@@ -612,6 +614,19 @@ async function change(caller: _Author_Doctor_, message: _CHANGE_Message__Client_
   }
   if (caller !== "human") {
     send({ kind: "refused", file, issues: ["changes in place come from the document editor"] });
+    return;
+  }
+  // while a task is active, an edit is a proposal in it, the file as it was
+  const [place] = tasksPlace();
+  const [active] = place === undefined ? [] : await activeTask(place);
+  if (place !== undefined && active !== undefined) {
+    const proposed = await proposeEdits(place, active.id, file, message.operations);
+    if (proposed.kind === "refused") {
+      send({ kind: "refused", file, issues: proposed.issues });
+      return;
+    }
+    send({ kind: "applied", file, document: proposed.value.document });
+    await announce([], [send]);
     return;
   }
   const outcome = await makeChange({

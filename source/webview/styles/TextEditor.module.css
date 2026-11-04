@@ -843,6 +843,12 @@
   outline: none;
 }
 
+/* empty, as a block Enter's just added is, still somewhere for the caret */
+.editableText:empty {
+  display: inline-block;
+  min-width: 1ch;
+}
+
 /* not while it's being amended */
 .amending .editableText {
   cursor: inherit;
