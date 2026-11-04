@@ -53,7 +53,7 @@ On `development`, at `f4eee5d`, two commits ahead of what's pushed:
 
 ## on branches
 
-Both are local, not pushed, and both are attempts at the roadblock above.
+Both are pushed to GitHub, and both are attempts at the roadblock above.
 
 - **`experiment/manual-proposals`** (`b1741c2`): your edits while a task is
   active become proposals, divided as the agent's are; held till the caret
