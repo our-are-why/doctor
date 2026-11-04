@@ -51,7 +51,7 @@ function renameBlock<__From__, __To__>(
   }
 }
 
-function renameNode<__From__, __To__>(
+export function renameNode<__From__, __To__>(
   node: _Node_Document_<__From__>,
   rename: (id: __From__) => __To__,
 ): _Node_Document_<__To__> {

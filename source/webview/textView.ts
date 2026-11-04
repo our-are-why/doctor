@@ -17,9 +17,21 @@ import type {
   _Target_Request_,
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
+import { proposalsOfEdits } from "../shared/edits.ts";
+import { mintId } from "../shared/id.ts";
 import { parseOwn } from "../shared/parse.ts";
-import { contentStart, continuedPattern, fencePattern, project, startsBlock, type _Projection_ } from "../shared/projection.ts";
-import { realize, realizeInto, withNodeText } from "../shared/proposals.ts";
+import {
+  contentStart,
+  continuedPattern,
+  fencePattern,
+  parseProjection,
+  project,
+  readerFor,
+  startsBlock,
+  type _Projection_,
+} from "../shared/projection.ts";
+import { realize } from "../shared/proposals.ts";
+import { reconcile } from "../shared/reconcile.ts";
 import type { _Amendment_Review_, _Open_Proposal_, _Verdict_Review_, _View_Drafting_ } from "../shared/protocol.ts";
 import { changeIdSchema, nodeIdSchema, offsetSchema } from "../shared/schema.ts";
 import { readTarget, writeTarget } from "../shared/target.ts";
@@ -36,6 +48,7 @@ import {
   type _Segment_Text_,
 } from "../shared/text.ts";
 import { indexNodes, nodesWithin, textOfNode } from "../shared/tree.ts";
+import { confineLines, type _Confined_Lines_ } from "./confine.ts";
 import * as monaco from "./monaco.ts";
 import "./styles/monaco.css";
 import styles from "./styles/TextEditor.module.css";
@@ -275,11 +288,12 @@ interface _Line_Proposal_ {
 
 const plainLine = (content: string): _Line_Proposal_ => ({ content, texts: [], changes: [], note: "" });
 
-// whether a proposal's words can be edited where they're shown: which texts
-// can, and what's done with one edited
+// whether a proposal can be edited where it's shown, swapped into the
+// editor's own lines to be, from a click in its lines: the line clicked, as
+// it reads, and how far into it
 type _Editing_Lines_ =
   | { kind: "fixed" }
-  | { kind: "editable"; textual: (holder: _Holder_Text_) => "text" | "other"; save: (holder: _Holder_Text_, next: _Text_Doctor_) => void };
+  | { kind: "swappable"; start: (at: Array<{ content: string; column: number }>) => void };
 
 // What's changed in a line since its proposal's round before: in its words,
 // nothing, all of them or some; where words were taken out of it, at a point
@@ -636,7 +650,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         changed.set(key, { ...entry, after: toggleContrast(entry.after, pointsOf(body, from), pointsOf(body, to), contrast) });
       }
     }
-    hooks.perform(() => [...changed.values()].flatMap((entry) => textOperations(entry.holder, entry.before, entry.after)));
+    perform(() => [...changed.values()].flatMap((entry) => textOperations(entry.holder, entry.before, entry.after)));
   };
 
   // what a proposal would add, as lines in the editor's own syntax
@@ -928,8 +942,22 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // which catches typing, pasting and cutting alike. A rejected one changes
   // nothing, so it locks nothing.
   const locks = editor.createDecorationsCollection();
-  const lockedLines = () => new Set(locks.getRanges().map((range) => range.startLineNumber));
+  // the lines a proposal targets; while one's swapped in to be edited, every
+  // line outside it, so nothing joins into one
+  const lockedLines = () => {
+    const [swap] = swapped;
+    if (swap === undefined) return new Set(locks.getRanges().map((range) => range.startLineNumber));
+    const { from, to } = swap.confined.range();
+    const outside = new Set<number>();
+    for (let line = 1; line <= model.getLineCount(); line += 1) if (line < from || line > to) outside.add(line);
+    return outside;
+  };
   const lockIfTouched = () => {
+    const [swap] = swapped;
+    if (swap !== undefined) {
+      editor.updateOptions({ readOnly: (editor.getSelections() ?? []).some((selection) => swap.confined.holds(selection) === "outside") });
+      return;
+    }
     const locked = lockedLines();
     const touches = (editor.getSelections() ?? []).some((selection) => {
       for (let line = selection.startLineNumber; line <= selection.endLineNumber; line += 1) if (locked.has(line)) return true;
@@ -1000,12 +1028,136 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     if (document !== undefined) decorate(document);
   };
 
+  // A proposal swapped in to be edited, when one is: the editor shows the
+  // document with it applied, the stretch that differs from the file
+  // confined, the rest read-only; what's typed there is read into that
+  // version, not sent to the file; left, what the version comes to against
+  // the file is its next round, one round, its new blocks with draft ids;
+  // and the editor's the file's again. What comes for the view meanwhile, a
+  // document from elsewhere, waits till then.
+  interface _Swap_Proposal_ {
+    item: _Open_Proposal_;
+    trunk: _Document_Doctor_;
+    edited: _Document_Doctor_;
+    confined: _Confined_Lines_;
+    replaced: number;
+  }
+  let swapped: Array<_Swap_Proposal_> = [];
+  let waitingShow: Array<_Document_Doctor_> = [];
+  const random = () => crypto.getRandomValues(new Uint8Array(10));
+  const mintNode = () => mintId(nodeIdSchema, random());
+  // what it takes the place of, read-only, as the file has it
+  const drawReplaced = (lines: Array<string>) => {
+    const node = window.document.createElement("div");
+    node.className = styles.swapReplaced;
+    const font = editor.getOption(monaco.editor.EditorOption.fontInfo);
+    node.style.fontFamily = font.fontFamily;
+    node.style.fontSize = `${font.fontSize}px`;
+    node.style.lineHeight = `${font.lineHeight}px`;
+    for (const line of lines) {
+      const row = window.document.createElement("div");
+      row.textContent = line === "" ? " " : line;
+      node.append(row);
+    }
+    return node;
+  };
+  const startSwap = (item: _Open_Proposal_, at: Array<{ content: string; column: number }>) => {
+    const [trunk] = documents;
+    if (trunk === undefined || swapped.length > 0) return;
+    const applied = applyOperations(trunk, realize(item.operations, previewId), { document: trunk.id, id: previewChange });
+    if (applied.kind === "refused") return;
+    const before = project(trunk).lines;
+    const after = project(applied.document);
+    // the stretch that differs: what's the same at either end left out
+    let same = 0;
+    while (same < before.length && same < after.lines.length && before[same] === after.lines[same]) same += 1;
+    let end = 0;
+    while (end < before.length - same && end < after.lines.length - same && before[before.length - 1 - end] === after.lines[after.lines.length - 1 - end]) end += 1;
+    const from = same + 1;
+    const to = after.lines.length - end;
+    if (to < from) return;
+    const replaced = before.slice(same, before.length - end);
+    applying = "applying";
+    model.setValue(after.lines.join("\n"));
+    track(after.owners);
+    applying = "idle";
+    const confined = confineLines(
+      editor,
+      { from, to },
+      {
+        replaced: replaced.length === 0 ? [] : [{ node: drawReplaced(replaced), lines: replaced.length }],
+        marginClassName: styles.targetedGutter,
+        left: (how, where) => leaveSwap(how, where),
+      },
+    );
+    swapped = [{ item, trunk, edited: applied.document, confined, replaced: replaced.length }];
+    decorate(applied.document);
+    showProposals(showing);
+    // the caret where the click was, in the line it was on
+    const lines = after.lines.slice(same, to);
+    const [clicked] = at;
+    const found = clicked === undefined ? -1 : lines.indexOf(clicked.content);
+    const line = found === -1 ? to : from + found;
+    const column = clicked === undefined || found === -1 ? model.getLineMaxColumn(line) : clicked.column + 1;
+    editor.setPosition({ lineNumber: line, column });
+    editor.focus();
+    lockIfTouched();
+  };
+  // what's typed in it read into its version, as the document's would be
+  // marks and links set, to the swapped-in version while there is one
+  const perform = (act: (document: _Document_Doctor_) => Array<_Operation_Change_>) => {
+    const [swap] = swapped;
+    if (swap === undefined) {
+      hooks.perform(act);
+      return;
+    }
+    const applied = applyOperations(swap.edited, act(swap.edited), { document: swap.edited.id, id: previewChange });
+    if (applied.kind === "refused") return;
+    swapped = [{ ...swap, edited: applied.document }];
+    decorate(applied.document);
+  };
+  const readSwapped = (swap: _Swap_Proposal_, lines: Array<string>, owners: Array<Array<_Id_Node_>>) => {
+    const parsed = parseProjection(lines, owners, readerFor(swap.edited, mintNode));
+    mark(parsed.kind === "rejected" ? parsed.issues : []);
+    if (parsed.kind === "rejected") return swap;
+    const read = { ...swap, edited: { ...swap.edited, content: parsed.value.body } };
+    swapped = [read];
+    track(parsed.value.owners);
+    decorate(read.edited);
+    return read;
+  };
+  const leaveSwap = (how: "left" | "escaped", where: Array<monaco.IPosition>) => {
+    const [held] = swapped;
+    if (held === undefined) return;
+    const { from, to } = held.confined.range();
+    // what's in the lines now, read once more, in case it's not been yet
+    const swap = how === "left" ? readSwapped(held, model.getLinesContent(), ownersNow()) : held;
+    swap.confined.release();
+    swapped = [];
+    if (how === "left") {
+      const divided = proposalsOfEdits(swap.trunk, reconcile(swap.trunk, swap.edited.content, mintNode), random);
+      const [first, ...rest] = divided.kind === "divided" ? divided.proposals.flat() : [];
+      if (first !== undefined) review(swap.item, { kind: "edit", operations: [first, ...rest] });
+    }
+    // the file's again, the caret where it went, as it is there
+    const back = where.map((position) =>
+      position.lineNumber > to
+        ? { lineNumber: position.lineNumber - (to - from + 1) + swap.replaced, column: position.column }
+        : position.lineNumber < from
+          ? position
+          : { lineNumber: from, column: 1 },
+    );
+    const [later] = waitingShow;
+    waitingShow = [];
+    show(later ?? swap.trunk);
+    showProposals(showing);
+    for (const position of back) editor.setPosition(position);
+    lockIfTouched();
+  };
+
   // the proposals shown, drawn again when the lines' width changes, as what
   // they add wraps with it
   let showing: Array<_Open_Proposal_> = [];
-  // the proposal's words being edited, if any, and what to draw once they're not
-  let editingWords: Array<HTMLElement> = [];
-  let deferred: Array<Array<_Open_Proposal_>> = [];
   let drawnWidth = 0;
   editor.onDidLayoutChange((info) => {
     if (showing.length > 0 && info.contentWidth !== drawnWidth) showProposals(showing);
@@ -1017,14 +1169,11 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // changes in the document is marked in the margin too, from where its
   // line's number starts, as what it adds is, so the lines it's about read
   // as one block with its actions closing it.
-  const showProposals = (open: Array<_Open_Proposal_>) => {
-    // put off while a proposal's words are being edited
-    if (editingWords.some((words) => words.isConnected && window.document.activeElement === words)) {
-      deferred = [open];
-      return;
-    }
+  const showProposals = (given: Array<_Open_Proposal_>) => {
     clearProposals();
-    showing = open;
+    showing = given;
+    // one swapped in to be edited is in the editor's lines, not drawn
+    const open = given.filter((each) => !swapped.some((swap) => swap.item.proposal === each.proposal));
     drawnWidth = editor.getLayoutInfo().contentWidth;
     const [shown] = documents;
     if (shown === undefined || open.length === 0) {
@@ -1261,88 +1410,6 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     // again draws its own again
     const goneDrawn = new Set<{ lines: Array<string> }>();
     const goneIn = new WeakMap<HTMLElement, Array<{ lines: Array<string> }>>();
-    // the keys that toggle a mark over what's selected, as in the document
-    const markKeys: Array<{ key: string; shift: "shift" | "plain"; contrast: _Contrast_Mark_ }> = [
-      { key: "b", shift: "plain", contrast: "bold" },
-      { key: "i", shift: "plain", contrast: "italic" },
-      { key: "m", shift: "shift", contrast: "monospace" },
-      { key: "h", shift: "shift", contrast: "highlighted" },
-      { key: "x", shift: "shift", contrast: "struck" },
-    ];
-    // A proposal's words, edited where they're shown: typed over, their marks
-    // kept, and toggled with the document's keys; saved on Enter or on
-    // leaving them, and put back as they were on Escape. While they're
-    // edited, nothing's redrawn, so an edit isn't lost to a redraw, and only
-    // the words changed so far are marked, as tight as they run, compared
-    // word by word with what the proposal had; once saved, they're marked as
-    // any round's changes are.
-    const makeEditable = (words: HTMLElement, held: { holder: _Holder_Text_; text: _Text_Doctor_ }, save: (next: _Text_Doctor_) => void) => {
-      words.contentEditable = "plaintext-only";
-      let working = held.text;
-      let leaving: "save" | "revert" = "save";
-      const current = () => rewrite(working, words.textContent ?? "").text;
-      const markEdited = () => {
-        const now = current();
-        for (const each of marking) {
-          each.edited.clear();
-          for (const change of compareTexts(held.text, now).after) {
-            for (const range of rangeIn(words, unitsOf(now.text, change.from), unitsOf(now.text, change.to))) each.edited.add(range);
-          }
-        }
-      };
-      words.addEventListener("input", markEdited);
-      words.addEventListener("focus", () => {
-        editingWords = [words];
-        leaving = "save";
-      });
-      words.addEventListener("keydown", (event) => {
-        event.stopPropagation();
-        if (event.key === "Enter" || event.key === "Escape") {
-          event.preventDefault();
-          leaving = event.key === "Enter" ? "save" : "revert";
-          words.blur();
-          return;
-        }
-        const shift = event.shiftKey ? "shift" : "plain";
-        const [toggle] = markKeys.filter((each) => (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === each.key && each.shift === shift);
-        if (toggle === undefined) return;
-        event.preventDefault();
-        const selection = window.getSelection();
-        const [range] = selection === null || selection.rangeCount === 0 ? [] : [selection.getRangeAt(0)];
-        if (range === undefined || !words.contains(range.startContainer) || !words.contains(range.endContainer)) return;
-        const offset = (container: Node, at: number) => {
-          const measure = window.document.createRange();
-          measure.setStart(words, 0);
-          measure.setEnd(container, at);
-          return measure.toString().length;
-        };
-        const from = offset(range.startContainer, range.startOffset);
-        const to = offset(range.endContainer, range.endOffset);
-        if (to <= from) return;
-        working = current();
-        working = toggleContrast(working, pointsOf(working.text, from), pointsOf(working.text, to), toggle.contrast);
-        words.replaceChildren();
-        drawText(words, working, [], [], []);
-        // what was selected, selected again
-        for (const again of rangeIn(words, from, to)) {
-          selection?.removeAllRanges();
-          selection?.addRange(again);
-        }
-        markEdited();
-      });
-      words.addEventListener("blur", () => {
-        editingWords = [];
-        for (const each of marking) each.edited.clear();
-        const next = leaving === "revert" ? held.text : current();
-        const edited = next.text !== held.text.text || JSON.stringify(next.overlay) !== JSON.stringify(held.text.overlay);
-        if (leaving === "save" && edited) save(next);
-        // what was put off while it was edited is drawn now, as is what's
-        // put back
-        const [waiting] = deferred;
-        deferred = [];
-        if (leaving === "revert" || waiting !== undefined) showProposals(waiting ?? showing);
-      });
-    };
     // each line with its markers drawn as the editor draws them, and its
     // words marked as they'll be, editable where its proposal's are
     const linesZone = (
@@ -1375,13 +1442,10 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
               : lately.words.kind === "whole"
                 ? [{ kind: "inserted", from: 0, to: Array.from(body).length }]
                 : [];
-          const editable = editing.kind === "editable" && editing.textual(held.holder) === "text" ? [editing] : [];
-          const words = editable.length > 0 ? element("span", styles.editableText, "") : shownLine;
+          // words it can be edited at, a caret over them
+          const words = editing.kind === "swappable" ? element("span", styles.editableText, "") : shownLine;
           drawText(words, held.text, changes, fresh, lately.removed);
-          for (const each of editable) {
-            makeEditable(words, held, (next) => each.save(held.holder, next));
-            shownLine.append(words);
-          }
+          if (words !== shownLine) shownLine.append(words);
           // a heading's rule from the end of its words, as the document has
           if (heading(held.holder) === "heading") shownLine.append(element("span", styles.leader, ""));
           at = content.length;
@@ -1722,42 +1786,6 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       overlay.style.removeProperty("visibility");
       return tall;
     };
-    // Your edit to a text a proposal shows, as its operations, its next round:
-    // in a node it adds, that node's text where it's added; in one the
-    // document has, the text written and styled as you left it, in place of
-    // how the proposal had it. An edit that leaves it changing nothing isn't
-    // one.
-    const saveEdit = (
-      shown: _Document_Doctor_,
-      item: _Open_Proposal_,
-      drafts: Map<_Id_Node_, _DRAFT_Id__Node_>,
-      holder: _Holder_Text_,
-      next: _Text_Doctor_,
-    ) => {
-      const draft = holder.kind === "node" ? drafts.get(holder.node) : undefined;
-      const sameHolder = (other: _Holder_Text_) => (other.kind === "title" ? holder.kind === "title" : holder.kind === "node" && other.node === holder.node);
-      const written = (): Array<_Operation_Change_<_DRAFT_Id__Node_>> => {
-        const [before] = textAt(shown, holder);
-        if (before === undefined) return [];
-        const same = (operation: _Operation_Change_<_DRAFT_Id__Node_>) =>
-          (operation.kind === "write" || operation.kind === "style") && sameHolder(operation.holder);
-        const at = item.operations.findIndex(same);
-        const kept = item.operations.filter((operation) => !same(operation));
-        const made = textOperations(holder, before, next).flatMap((operation) =>
-          operation.kind === "write" || operation.kind === "style" ? [operation] : [],
-        );
-        return at === -1 ? [...kept, ...made] : [...kept.slice(0, at), ...made, ...kept.slice(at)];
-      };
-      const operations =
-        draft === undefined
-          ? written()
-          : item.operations.map((operation) =>
-              operation.kind === "insert" ? { ...operation, subtree: withNodeText(operation.subtree, draft, next) } : operation,
-            );
-      const [first, ...rest] = operations;
-      if (first === undefined) return;
-      review(item, { kind: "edit", operations: [first, ...rest] });
-    };
     // Changes sent back as one request: those on its words as passages, those
     // on the whole of it as what else should change.
     const sendBack = (item: _Open_Proposal_, changes: Array<_Amendment_Review_>) => {
@@ -1814,7 +1842,6 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       const amending = (batches.get(proposal) ?? []).length > 0 || opened.has(proposal) || changing.some((open) => open.item.proposal === proposal);
       for (const lines of linesShown.get(proposal) ?? []) {
         lines.classList.toggle(styles.amending, amending);
-        for (const words of lines.querySelectorAll<HTMLElement>(`.${styles.editableText}`)) words.contentEditable = amending ? "false" : "plaintext-only";
       }
     };
     const fitChange = (host: HTMLElement) => {
@@ -2088,6 +2115,26 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         const id = `doctor.lines.${widgets.length}`;
         widgets.push({ getId: () => id, getDomNode: () => shownLines, getPosition: () => null });
         if (takes) shownLines.addEventListener("contextmenu", (event) => offerChanges(event, shownLines));
+        // a click, not a selection, in its lines swaps it in to be edited, the
+        // caret where the click was
+        if (editing.kind === "swappable") {
+          shownLines.addEventListener("click", (event) => {
+            const selection = window.getSelection();
+            if (selection !== null && !selection.isCollapsed) return;
+            const range = window.document.caretRangeFromPoint(event.clientX, event.clientY);
+            const container = range === null ? null : range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+            const shownLine = container?.closest(`.${styles.proposalLine}`);
+            const line = shownLine === null || shownLine === undefined ? undefined : linesOf.get(shownLine);
+            if (range === null || shownLine === null || shownLine === undefined || line === undefined) {
+              editing.start([]);
+              return;
+            }
+            const measure = window.document.createRange();
+            measure.setStart(shownLine, 0);
+            measure.setEnd(range.startContainer, range.startOffset);
+            editing.start([{ content: line.content, column: Math.min(measure.toString().length, line.content.length) }]);
+          });
+        }
         markBatched(shownLines);
         linesShown.set(item.proposal, [...(linesShown.get(item.proposal) ?? []), shownLines]);
         markAmending(item.proposal);
@@ -2144,18 +2191,19 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         return "joined";
       };
       let last = 1;
-      const minted = new Map<_DRAFT_Id__Node_, _Id_Node_>();
-      const operations = realizeInto(item.operations, previewId, minted);
+      const operations = realize(item.operations, previewId);
       const previewed = linesAfter(shown, operations);
-      const drafts = new Map<_Id_Node_, _DRAFT_Id__Node_>();
-      for (const [draft, real] of minted) drafts.set(real, draft);
-      // its words can be edited while it waits for review, or once it's
-      // accepted; not while it's revised, or once it's rejected
-      // its words can't be edited while amendments to them are drafted, as
-      // they say where they are in the words as they were
+      // It can be edited, swapped into the editor's lines, while it waits for
+      // review, or once it's accepted; not while it's revised, or once it's
+      // rejected, nor while amendments to it are drafted, as they say where
+      // they are in it as it was. One that moves or takes out a block is
+      // edited by amending it, for now.
       const editing: _Editing_Lines_ =
-        (item.state === "proposed" || item.state === "accepted") && (batches.get(item.proposal) ?? []).length === 0 && !opened.has(item.proposal)
-          ? { kind: "editable", textual: previewed.textual, save: (holder, next) => saveEdit(shown, item, drafts, holder, next) }
+        (item.state === "proposed" || item.state === "accepted") &&
+        (batches.get(item.proposal) ?? []).length === 0 &&
+        !opened.has(item.proposal) &&
+        item.operations.every((operation) => operation.kind !== "move" && operation.kind !== "delete")
+          ? { kind: "swappable", start: (at) => startSwap(item, at) }
           : { kind: "fixed" };
       // back from revising, what's changed since its round before
       const since = sinceBefore(shown, item, previewed.all);
@@ -2610,7 +2658,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     const [place] = linking;
     closeLink();
     if (place === undefined) return;
-    hooks.perform(() => textOperations(place.holder, place.before, relink(place.before, place.from, place.to, targets)));
+    perform(() => textOperations(place.holder, place.before, relink(place.before, place.from, place.to, targets)));
   });
   linkInput.addEventListener("input", () => linkBox.classList.remove(styles.linkInvalid));
   linkInput.addEventListener("blur", closeLink);
@@ -3216,7 +3264,9 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       queued = "idle";
       renumber();
       relevel();
-      hooks.edited(model.getLinesContent(), ownersNow());
+      const [swap] = swapped;
+      if (swap === undefined) hooks.edited(model.getLinesContent(), ownersNow());
+      else readSwapped(swap, model.getLinesContent(), ownersNow());
     });
   });
 
@@ -3301,9 +3351,16 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   });
 
   return {
-    show,
+    // from outside, a document waits while a proposal's swapped in
+    show: (document) => {
+      if (swapped.length > 0) waitingShow = [document];
+      else show(document);
+    },
     track,
-    decorate,
+    decorate: (document) => {
+      if (swapped.length > 0) waitingShow = [document];
+      else decorate(document);
+    },
     mark,
     // new proposals, after a verdict or anything else, answer what was on its way
     proposals: (open) => {

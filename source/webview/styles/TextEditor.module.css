@@ -836,6 +836,24 @@
     linear-gradient(to right, transparent calc(var(--bar-at) + 3px), var(--added) calc(var(--bar-at) + 3px));
 }
 
+/* what a proposal swapped in to be edited takes the place of, read-only in
+   the gap above it, as the file has it: hatched, as a line changed in place
+   is, its words muted */
+.swapReplaced {
+  --stripe: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 16%, transparent);
+  background: linear-gradient(135deg, var(--stripe) 25%, transparent 25% 50%, var(--stripe) 50% 75%, transparent 75%) 0 0 /
+    calc(var(--line, 20px) / 2) calc(var(--line, 20px) / 2);
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  padding-left: var(--text-inset, 0px);
+}
+
+.swapReplaced > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
 /* a proposal's words, editable where they're shown: a caret over them, and
    nothing else, so they read as they are while they're edited */
 .editableText {
