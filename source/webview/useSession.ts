@@ -10,6 +10,7 @@ import type {
 } from "../shared/domain.next.ts";
 import type { _NonEmpty_ } from "../shared/list.ts";
 import type {
+  _Agent_Status_,
   _Task_Status_,
   _Open_Proposal_,
   _Token_Endpoint_,
@@ -72,6 +73,8 @@ export interface _Session_Webview_ {
   stopDrafting: () => void;
   // the task the bar tells of, if any: the active one, or the last finished
   status: Array<_Task_Status_>;
+  // where the agent is, task or no task
+  agent: _Agent_Status_;
   copyPrompt: () => void;
   acknowledge: (task: _Id_Task_) => void;
   // the active task parked, canceled, steered with a request added to it, or
@@ -103,6 +106,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
   const [open, setOpen] = useState<Array<_Open_Proposal_>>([]);
   const [drafting, setDrafting] = useState<Array<_View_Drafting_>>([]);
   const [status, setStatus] = useState<Array<_Task_Status_>>([]);
+  const [agent, setAgent] = useState<_Agent_Status_>({ presence: "away", heard: [] });
   const [openProblems, setOpenProblems] = useState<Array<string>>([]);
   const timer = useRef(0);
 
@@ -137,6 +141,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     }
     if (message.kind === "status") {
       setStatus(message.task);
+      setAgent(message.agent);
       return;
     }
     const current = loadRef.current;
@@ -229,6 +234,7 @@ export function useSession(file: string, endpoint: _Url_Endpoint_, token: _Token
     start,
     stopDrafting,
     status,
+    agent,
     copyPrompt,
     acknowledge,
     park,

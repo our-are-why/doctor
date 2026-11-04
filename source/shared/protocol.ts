@@ -358,6 +358,16 @@ export interface _TASKS_Message__Server_ extends __BASE_Message__Server_<"tasks"
 export interface _STATUS_Message__Server_ extends __BASE_Message__Server_<"status"> {
   file: string;
   task: Array<_Task_Status_>;
+  agent: _Agent_Status_;
+}
+
+// Where the agent is, as doctor knows it, task or no task: waiting, with a
+// `doctor wait` open; working, with its turn and heard from lately; quiet,
+// with its turn but not heard from for a while; or away, not listening; and
+// when it was last heard from.
+export interface _Agent_Status_ {
+  presence: "waiting" | "working" | "quiet" | "away";
+  heard: Array<string>;
 }
 
 export interface _Task_Status_ {
@@ -365,7 +375,9 @@ export interface _Task_Status_ {
   name: string;
   state: "working" | "reviewing" | "completed" | "canceled";
   turn: "agent" | "human";
-  agent: "waiting" | "working" | "away";
+  // where the agent is, as doctor knows it, and when it was last heard from
+  agent: "waiting" | "working" | "quiet" | "away";
+  heard: Array<string>;
   requests: Array<_Request_Status_>;
   proposals: _Proposals_Status_;
   // when it started, an ISO time, and when it finished, if it has, and by
@@ -492,7 +504,8 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
         name: v.string(),
         state: v.picklist(["working", "reviewing", "completed", "canceled"]),
         turn: v.picklist(["agent", "human"]),
-        agent: v.picklist(["waiting", "working", "away"]),
+        agent: v.picklist(["waiting", "working", "quiet", "away"]),
+        heard: v.array(v.string()),
         requests: v.array(
           v.strictObject({
             text: v.string(),
@@ -517,6 +530,7 @@ export const serverMessageSchema: v.GenericSchema<unknown, _Message_Server_> = v
         summaries: v.array(v.strictObject({ document: documentIdSchema, summary: v.string(), headline: v.string() })),
       }),
     ),
+    agent: v.strictObject({ presence: v.picklist(["waiting", "working", "quiet", "away"]), heard: v.array(v.string()) }),
   }),
   v.strictObject({
     kind: v.literal("focus"),

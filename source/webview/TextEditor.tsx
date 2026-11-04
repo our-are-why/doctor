@@ -6,7 +6,7 @@ import { reconcile } from "../shared/reconcile.ts";
 import { nodeIdSchema } from "../shared/schema.ts";
 import { waiting } from "./session.ts";
 import styles from "./styles/TextEditor.module.css";
-import { describeProposals, TaskCard, type _Offer_Card_ } from "./TaskCard.tsx";
+import { ago, describeProposals, TaskCard, type _Offer_Card_ } from "./TaskCard.tsx";
 import { createTextView, type _View_Text_ } from "./textView.ts";
 import { useSession } from "./useSession.ts";
 
@@ -143,7 +143,18 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
     if (pinned.current === "pinned") return;
     hiding.current = [window.setTimeout(() => setCard([]), 200)];
   };
-  const showCard = (event: MouseEvent) => {
+  // the task's item, for the focus to go back to when its card's closed from
+  // the keyboard, without opening it again
+  const taskItem = useRef<HTMLElement | null>(null);
+  const refocusing = useRef<"refocusing" | "no">("no");
+  const closeCardToItem = () => {
+    setCard([]);
+    refocusing.current = "refocusing";
+    taskItem.current?.focus();
+    refocusing.current = "no";
+  };
+  const showCard = (event: { currentTarget: EventTarget | null }) => {
+    if (refocusing.current === "refocusing") return;
     keepCard();
     if (!(event.currentTarget instanceof HTMLElement)) return;
     const box = event.currentTarget.getBoundingClientRect();
@@ -152,7 +163,53 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
     const left = mark === null ? box.left : mark.getBoundingClientRect().left;
     setCard([{ left: Math.max(Math.min(left, window.innerWidth - 448), 8), top: box.bottom + 6 }]);
   };
-  const hover = { onMouseEnter: showCard, onMouseLeave: hideCard };
+  // The task's item opens its card when hovered, or reached from the keyboard,
+  // the focus going on into the card, which sits right after it for that;
+  // and closes it when it's left, unless that's for the card.
+  const hover = {
+    onMouseEnter: showCard,
+    onMouseLeave: hideCard,
+    onFocus: showCard,
+    onBlur: hideCard,
+    tabIndex: 0,
+    ref: (element: HTMLElement | null) => {
+      taskItem.current = element;
+    },
+  };
+  const taskCard = () =>
+    task === undefined
+      ? null
+      : card.map((place) => (
+            <TaskCard
+              key="card"
+              status={task}
+              document={shownHere}
+              actions={cardActions()}
+              compose={
+                active && session.load.kind === "editing"
+                  ? [
+                      {
+                        add: (text) => {
+                          for (const status of session.status) {
+                            if (session.load.kind === "editing") session.steer(status.task, [{ kind: "document", document: session.load.document.id }], text);
+                          }
+                        },
+                        pin: (how) => {
+                          pinned.current = how;
+                          keepCard();
+                        },
+                      },
+                    ]
+                  : []
+              }
+              left={place.left}
+              top={place.top}
+              onEnter={keepCard}
+              onLeave={hideCard}
+              onEscape={closeCardToItem}
+            />
+          ));
+
   // The task by its id, its overview a hover away, and before it a mark of
   // where it is, in a slot of its own width so the id stays put: a spinner
   // while an agent's on it, the id shimmering; a dot when it's waiting on
@@ -167,7 +224,7 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
       return status.finished.some((stamp) => stamp.by === "agent") ? mark("↩", styles.stopped) : mark("✓", styles.done);
     }
     if (status.turn === "human") return mark("●", styles.yours);
-    if (status.agent === "away") return mark("◌", styles.away);
+    if (status.agent === "away" || status.agent === "quiet") return mark("◌", styles.away);
     return (
       <span className={styles.taskMark}>
         <span className={styles.spinner} />
@@ -221,21 +278,50 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
         </span>
       );
     }
-    if (task.agent === "away") {
-      return (
-        <button className={`${styles.statusItem} ${styles.taskItem}`} type="button" title="Copy what to tell your agent" onClick={copyPrompt} {...hover}>
-          {markOf(task)}
-          <span>{copied === "copied" ? "copied what to tell your agent" : `no agent listening · ${task.task}`}</span>
-        </button>
-      );
-    }
+    // the agent's turn: the id shimmers while it's at work on it; where the
+    // agent is, said in words, is the footer's
     return (
       <span className={styles.taskItem} {...hover}>
         {markOf(task)}
-        <span className={styles.shimmer}>{task.task}</span>
+        <span className={task.agent === "working" || task.agent === "waiting" ? styles.shimmer : styles.taskId}>{task.task}</span>
       </span>
     );
   };
+  // Where the agent is, under the editor, task or no task: waiting, working,
+  // quiet since it was last heard from, or not listening, when what to tell
+  // an agent is a click away.
+  const agentLine = () => {
+    const { presence, heard } = session.agent;
+    if (presence === "away") {
+      return (
+        <button className={styles.statusItem} type="button" title="Copy what to tell your agent" onClick={copyPrompt}>
+          <span className={`${styles.taskMark} ${styles.away}`}>◌</span>{" "}
+          {copied === "copied" ? "copied what to tell your agent" : "no agent listening · copy what to tell it"}
+        </button>
+      );
+    }
+    if (presence === "quiet") {
+      const [last] = heard;
+      return (
+        <span>
+          <span className={`${styles.taskMark} ${styles.away}`}>◌</span> agent quiet{last === undefined ? "" : ` · last heard ${ago(last)}`}
+        </span>
+      );
+    }
+    return (
+      <span>
+        <span className={styles.taskMark}>{presence === "working" ? <span className={styles.spinner} /> : "●"}</span>{" "}
+        {presence === "working" ? "agent working" : "agent waiting"}
+      </span>
+    );
+  };
+  // quiet, how long ago it was heard from goes on changing
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (session.agent.presence !== "quiet") return;
+    const timer = window.setInterval(() => tick((count) => count + 1), 30_000);
+    return () => window.clearInterval(timer);
+  }, [session.agent.presence]);
   // How far through its proposals here the active task is, beside it, or, in
   // a document it doesn't touch, that it has none here.
   const progressHere = () => {
@@ -314,6 +400,7 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
             </button>
           ) : null}
           {taskStatus()}
+          <span className={styles.cardSlot}>{taskCard()}</span>
           {progressHere()}
           {drafted === "" ? null : <span>{drafted}</span>}
           {load.kind === "loading" ? <span>opening…</span> : null}
@@ -364,39 +451,15 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
           ))}
         </ul>
       ) : null}
-      {task === undefined
-        ? null
-        : card.map((place) => (
-            <TaskCard
-              key="card"
-              status={task}
-              document={shownHere}
-              actions={cardActions()}
-              compose={
-                active && session.load.kind === "editing"
-                  ? [
-                      {
-                        add: (text) => {
-                          for (const status of session.status) {
-                            if (session.load.kind === "editing") session.steer(status.task, [{ kind: "document", document: session.load.document.id }], text);
-                          }
-                        },
-                        pin: (how) => {
-                          pinned.current = how;
-                          keepCard();
-                        },
-                      },
-                    ]
-                  : []
-              }
-              left={place.left}
-              top={place.top}
-              onEnter={keepCard}
-              onLeave={hideCard}
-            />
-          ))}
       <div key="dock" ref={dock} className={styles.dock} />
       <div key="host" ref={host} className={styles.host} />
+      <footer
+        key="footer"
+        className={styles.agentBar}
+        style={numbersLeft === undefined ? undefined : { paddingLeft: `${numbersLeft}px` }}
+      >
+        {agentLine()}
+      </footer>
     </main>
   );
 }

@@ -33,6 +33,7 @@ import {
   type _Open_Proposal_,
   type _REVIEW_Message__Client_,
   type _ACCEPTALL_Message__Client_,
+  type _Agent_Status_,
   type _STEER_Message__Client_,
   type _TASK_Message__Client_,
   type _Token_Endpoint_,
@@ -41,7 +42,7 @@ import { createDocument, makeChange } from "./changes.ts";
 import { registerDashboardSerializer, showDashboard } from "./dashboard.ts";
 import { documentViewType, registerDocumentEditor, textViewType } from "./documentEditor.ts";
 import { documentSuffix, newDocument, readDocument } from "./documents.ts";
-import { presence, serveAgent, wake, whenPresenceChanges } from "./agent.ts";
+import { lastHeard, presence, serveAgent, wake, whenPresenceChanges } from "./agent.ts";
 import { mintToken, startEndpoint, type _Connect_Endpoint_, type _Serve_Endpoint_ } from "./endpoint.ts";
 import {
   accept,
@@ -314,6 +315,7 @@ function statusOf(tasks: Array<_Task_Doctor_>): Array<_Task_Status_> {
         state: task.state,
         turn: agents.includes(task.id) ? "agent" : "human",
         agent: presence(),
+        heard: lastHeard().map((time) => new Date(time).toISOString()),
         requests: latestBrief(task).requests.map((request) => ({
           text: request.text.text,
           targets: request.targets.map(describeAim),
@@ -358,18 +360,21 @@ async function announce(problems: Array<string>, to: Array<_Send_Session_>): Pro
     for (const send of sends) {
       send({ kind: "proposals", file, open, problems: to.includes(send) ? problems : [] });
       send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
-      send({ kind: "status", file, task: statusOf(tasks) });
+      send({ kind: "status", file, task: statusOf(tasks), agent: agentStatus() });
     }
   }
   wake();
 }
+
+// where the agent is, for every editor's footer
+const agentStatus = (): _Agent_Status_ => ({ presence: presence(), heard: lastHeard().map((time) => new Date(time).toISOString()) });
 
 // tells every editor the agent's presence changed, and nothing else
 async function tellStatus(): Promise<void> {
   const [place] = tasksPlace();
   if (place === undefined) return;
   const task = statusOf(await listTasks(place));
-  for (const [file, sends] of viewers) for (const send of sends) send({ kind: "status", file, task });
+  for (const [file, sends] of viewers) for (const send of sends) send({ kind: "status", file, task, agent: agentStatus() });
 }
 
 const serve: _Serve_Endpoint_ = async (caller, request) => {
@@ -595,7 +600,7 @@ async function open(file: string, send: _Send_Session_): Promise<void> {
   const tasks = await listTasks(place);
   send({ kind: "proposals", file, open: await openProposals(tasks, file), problems: [] });
   send({ kind: "focus", file, drafting: draftingIn(tasks, file) });
-  send({ kind: "status", file, task: statusOf(tasks) });
+  send({ kind: "status", file, task: statusOf(tasks), agent: agentStatus() });
 }
 
 async function change(caller: _Author_Doctor_, message: _CHANGE_Message__Client_, send: _Send_Session_) {

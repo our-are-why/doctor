@@ -163,29 +163,40 @@ function holdUp(tasks: Array<_Task_Doctor_>): string {
 let waiting = 0;
 let handedOut: Array<number> = [];
 let lastWaited: Array<number> = [];
+// when the agent last asked anything of doctor, at work on its turn
+let heard: Array<number> = [];
 let sleepers: Array<() => void> = [];
 
 // a wait answers within this long, well inside how long an HTTP client waits
 // for an answer; the CLI asks again
 const longestWait = 50_000;
 
-// an agent given its turn is taken to be working on it for this long, unless
-// it comes back to wait sooner
-const workingFor = 15 * 60_000;
+// an agent with its turn is working while it's been heard from within this
+// long; quiet after, maybe thinking, maybe gone, which doctor can't tell
+const quietAfter = 5 * 60_000;
 
 // an agent whose wait ended without a turn is still taken to be waiting for
 // this long: the CLI asks again at once, and between two of its requests
 // nobody is waiting for a moment
 const between = 5_000;
 
-export type _Presence_Agent_ = "waiting" | "working" | "away";
+// Where the agent is, as doctor knows it, never guessed: waiting, with a
+// `doctor wait` open; working, with its turn and heard from lately; quiet,
+// with its turn but not heard from for a while; or away, with nothing open
+// and not its turn, so no agent's listening.
+export type _Presence_Agent_ = "waiting" | "working" | "quiet" | "away";
 
 export function presence(): _Presence_Agent_ {
   const [waited] = lastWaited;
   if (waiting > 0 || (waited !== undefined && Date.now() - waited < between)) return "waiting";
   const [given] = handedOut;
-  return given !== undefined && Date.now() - given < workingFor ? "working" : "away";
+  if (given === undefined) return "away";
+  const [last = given] = heard;
+  return Date.now() - Math.max(last, given) < quietAfter ? "working" : "quiet";
 }
+
+// when the agent was last heard from, if it has been
+export const lastHeard = (): Array<number> => heard;
 
 // Whoever wants to know when the agent's presence changes, told only when
 // what presence() answers is different, rechecked once the times above run
@@ -246,7 +257,7 @@ async function waitForTurn(place: _Place_Tasks_, wanted: number) {
     // handed its turn, the agent is working until that runs out; otherwise
     // it has a moment to ask again before it counts as away
     lastWaited = handedOut.length === 0 ? [Date.now()] : [];
-    setTimeout(presenceMayHaveChanged, (handedOut.length === 0 ? between : workingFor) + 100);
+    setTimeout(presenceMayHaveChanged, (handedOut.length === 0 ? between : quietAfter) + 100);
     presenceMayHaveChanged();
   }
 }
@@ -260,6 +271,12 @@ export async function serveAgent(
   request: _Request_Endpoint_,
 ): Promise<_Answer_Endpoint_> {
   const route = `${request.method} ${request.path}`;
+  // anything the agent asks is it at work, quiet again only after a while
+  if (caller === "agent") {
+    heard = [Date.now()];
+    setTimeout(presenceMayHaveChanged, quietAfter + 100);
+    presenceMayHaveChanged();
+  }
   const [task] = await activeTask(place);
   if (route === "GET /task") {
     if (task === undefined) return issues(404, ["there's no active task"]);

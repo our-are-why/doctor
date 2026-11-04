@@ -26,6 +26,10 @@ function describeState(status: _Task_Status_): string {
     case "reviewing":
       if (status.turn === "human") return "waiting for your review";
       if (status.agent === "away") return "the agent's turn, and no agent's listening";
+      if (status.agent === "quiet") {
+        const [heard] = status.heard;
+        return heard === undefined ? "the agent's turn, and it's gone quiet" : `the agent's turn, last heard from ${ago(heard)}`;
+      }
       if (status.agent === "waiting") return "the agent's turn, about to be taken";
       return status.state === "reviewing" ? "sent back, the agent's revising" : "the agent's working on it";
   }
@@ -220,6 +224,7 @@ export function TaskCard({
   top,
   onEnter,
   onLeave,
+  onEscape,
 }: {
   status: _Task_Status_;
   // the document it's shown over, if any, and its proposals
@@ -232,6 +237,8 @@ export function TaskCard({
   top: number;
   onEnter: () => void;
   onLeave: () => void;
+  // Escape, from the keyboard: closes it, the focus back on its item
+  onEscape: () => void;
 }) {
   const finished = status.state === "completed" ? "completed" : "canceled";
   const root = useRef<HTMLDivElement>(null);
@@ -283,6 +290,16 @@ export function TaskCard({
       style={{ left: `${left}px`, top: `${top}px` }}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
+      // the focus inside it keeps it, as the pointer over it does; leaving it
+      // for somewhere else lets it go
+      onFocusCapture={onEnter}
+      onBlurCapture={(event) => {
+        if (event.relatedTarget instanceof Node && root.current?.contains(event.relatedTarget) === true) return;
+        onLeave();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && composing === "closed") onEscape();
+      }}
     >
       <section className={styles.part}>
         <div className={styles.head}>

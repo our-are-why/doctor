@@ -40,6 +40,16 @@
   white-space: nowrap;
 }
 
+/* the task's card, right after its item for the keyboard to reach it, set
+   apart by nothing, as it floats over the editor */
+.cardSlot {
+  display: contents;
+}
+
+.status > .cardSlot::before {
+  content: none;
+}
+
 .status > * + *::before {
   content: "·";
   margin-right: 0.4rem;
@@ -236,6 +246,21 @@
   min-height: 0;
 }
 
+/* under the editor, where the agent is, in small muted words from where the
+   line numbers start, a hairline above */
+.agentBar {
+  align-items: center;
+  border-top: 1px solid var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  flex: none;
+  font-family: var(--vscode-font-family);
+  font-size: 0.85em;
+  gap: 0.4rem;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
 /* decorations: each rule is scoped to the editor, so it outranks the
    colour class Monaco gives every token */
 
@@ -254,6 +279,13 @@
   position: absolute;
   top: 55%;
   width: 100vw;
+}
+
+/* a section's parent going on after it, its heading again: muted, as it
+   says where what follows belongs, not what the document says */
+:global(.monaco-editor) .continued {
+  color: var(--vscode-editorLineNumber-foreground);
+  font-style: italic;
 }
 
 /* marks, drawn quietly; widths only change where the decoration says so */
@@ -817,6 +849,8 @@
 }
 
 /* a line wraps at the editor's width, as the document's lines do */
+/* a heading's rule runs on past the line, to the editor's own edge, as the
+   document's does, where the editor clips it */
 .proposalLine {
   overflow-wrap: anywhere;
   white-space: pre-wrap;

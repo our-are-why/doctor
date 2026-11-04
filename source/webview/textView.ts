@@ -18,7 +18,7 @@ import type {
   _Text_Doctor_,
 } from "../shared/domain.next.ts";
 import { parseOwn } from "../shared/parse.ts";
-import { contentStart, fencePattern, project, startsBlock, type _Projection_ } from "../shared/projection.ts";
+import { contentStart, continuedPattern, fencePattern, project, startsBlock, type _Projection_ } from "../shared/projection.ts";
 import { realize, realizeInto, withNodeText } from "../shared/proposals.ts";
 import type { _Amendment_Review_, _Open_Proposal_, _Verdict_Review_, _View_Drafting_ } from "../shared/protocol.ts";
 import { changeIdSchema, nodeIdSchema, offsetSchema } from "../shared/schema.ts";
@@ -519,6 +519,12 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       }
       const [owner] = owners[at] ?? [];
       const node = owner === undefined ? undefined : index.get(owner)?.node;
+      // a section's parent going on after it: its heading again, muted, as
+      // it's not the document's words but where they belong
+      if (owner === undefined && continuedPattern.test(content)) {
+        inline(line, 0, content.length, styles.continued);
+        return;
+      }
       if (node?.kind === "code") {
         if (!targeted.has(line)) whole(line, styles.codeStart);
         inline(line, 0, 3, styles.fence);
@@ -670,6 +676,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         holder: (_holder: _Holder_Text_): Array<_Line_Proposal_> => [],
         all: (): Array<_Line_Proposal_> => [],
         textual: (_holder: _Holder_Text_): "text" | "other" => "other",
+        heading: (_holder: _Holder_Text_): "heading" | "plain" => "plain",
       };
     }
     const projection = project(applied.document);
@@ -678,8 +685,14 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       const entry = index.get(id);
       if (entry === undefined) return [];
       const inside = new Set<string>(nodesWithin(entry.node).map((each) => each.id));
-      const start = projection.owners.findIndex((owner) => owner.some((owned) => inside.has(owned)));
-      if (start === -1) return [];
+      const first = projection.owners.findIndex((owner) => owner.some((owned) => inside.has(owned)));
+      if (first === -1) return [];
+      // from the parent's heading going on, when that's right before it, so
+      // what's added after a section reads as where it really goes
+      let above = first - 1;
+      while (above > 0 && (projection.lines[above] ?? "").trim() === "") above -= 1;
+      const going = (projection.owners[above] ?? []).length === 0 && continuedPattern.test(projection.lines[above] ?? "");
+      const start = going ? above : first;
       let end = start;
       for (let at = start + 1; at < projection.lines.length; at += 1) {
         const owner = projection.owners[at] ?? [];
@@ -701,7 +714,10 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       const kind = index.get(wanted.node)?.node.kind;
       return kind === "section" || kind === "quote" || kind === "paragraph" || kind === "listItem" ? "text" : "other";
     };
-    return { node, holder, all, textual };
+    // a heading, the title's or a section's, as the document draws it
+    const heading = (wanted: _Holder_Text_): "heading" | "plain" =>
+      wanted.kind === "title" || index.get(wanted.node)?.node.kind === "section" ? "heading" : "plain";
+    return { node, holder, all, textual, heading };
   };
 
   // What's changed in a proposal since its round before, as each leaves the
@@ -1329,7 +1345,13 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
     };
     // each line with its markers drawn as the editor draws them, and its
     // words marked as they'll be, editable where its proposal's are
-    const linesZone = (lines: Array<_Line_Proposal_>, tint: string, since: (line: _Line_Proposal_) => _Since_Line_, editing: _Editing_Lines_) => {
+    const linesZone = (
+      lines: Array<_Line_Proposal_>,
+      tint: string,
+      since: (line: _Line_Proposal_) => _Since_Line_,
+      editing: _Editing_Lines_,
+      heading: (holder: _Holder_Text_) => "heading" | "plain",
+    ) => {
       const zone = element("div", `${styles.proposalAdded} ${tint}`, "");
       const drew: Array<{ lines: Array<string> }> = [];
       goneIn.set(zone, drew);
@@ -1360,6 +1382,8 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
             makeEditable(words, held, (next) => each.save(held.holder, next));
             shownLine.append(words);
           }
+          // a heading's rule from the end of its words, as the document has
+          if (heading(held.holder) === "heading") shownLine.append(element("span", styles.leader, ""));
           at = content.length;
         }
         // a line that's not one text, new since the round before, underlined
@@ -2055,7 +2079,7 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
         }
       };
       const zoneOf = (after: number, lines: Array<_Line_Proposal_>, rank: number): _Zone_Proposal_ => {
-        const shownLines = linesZone(lines, tint, since, editing);
+        const shownLines = linesZone(lines, tint, since, editing, previewed.heading);
         if (item.state === "revising") shownLines.classList.add(styles.revisingLines);
         const boxes = boxesOf(shownLines);
         const rows = Math.max(Math.round(boxes.reduce((sum, box) => sum + box.height, 0) / height), 1);
@@ -3160,6 +3184,14 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
       if (quote === "" && content.trim() !== "") {
         for (const key of [...open.keys()]) if (key !== "") open.delete(key);
       }
+      // a parent going on after its section closes what's deeper than it
+      const going = continuedPattern.exec(rest);
+      if (going !== null) {
+        const back = open.get(quote) ?? [];
+        while ((back.at(-1) ?? 0) > Number(going[1] ?? 0)) back.pop();
+        open.set(quote, back);
+        return;
+      }
       const heading = /^#(\d+)(?= |$)/.exec(rest);
       const written = Number(heading?.[1] ?? 0);
       if (heading === null || written === 0) return;
@@ -3218,8 +3250,13 @@ export function createTextView(host: HTMLElement, dock: HTMLElement, hooks: _Hoo
   // its own level, and no shallower than #1
   const inHeading = editor.createContextKey<boolean>("doctorHeading", false);
   const headingIn = (content: string) => /^#(\d+)(?= |$)/.exec(content);
+  // a section's own heading, not its parent's going on after it, which stays
+  // where it is, an edge of what's moved
   const isHeading = (line: number) =>
-    line > 1 && lineKinds()[line - 1] === "text" && headingIn(model.getLineContent(line)) !== null;
+    line > 1 &&
+    lineKinds()[line - 1] === "text" &&
+    headingIn(model.getLineContent(line)) !== null &&
+    !continuedPattern.test(model.getLineContent(line));
   const shiftSection = (direction: "in" | "out") => {
     const position = editor.getPosition();
     if (position === null || !isHeading(position.lineNumber)) return;

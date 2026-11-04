@@ -87,7 +87,7 @@ export function project(document: _Document_Doctor_): _Projection_ {
       holding(item.id, `${mark}${written.startsWith("\\") ? "\\" : ""}`, written);
       for (const child of item.children) {
         if (child.kind === "list") items(child, depth + 1, within);
-        else blocks([child], 1, within);
+        else blocks([child], 1, within, "");
       }
     });
   };
@@ -98,8 +98,17 @@ export function project(document: _Document_Doctor_): _Projection_ {
     push("```", []);
   };
 
-  const blocks = (children: Array<_Block_Document_>, depth: number, within: "top" | "quote") => {
+  // Blocks at a depth, in what's given: the body, under its title, a
+  // section, under its heading, or a quote, under its reference. A block
+  // after a section that isn't one is the parent's, not the section's, so
+  // the parent's heading comes again before it, with (contd.), as headings
+  // own every line after them.
+  const blocks = (children: Array<_Block_Document_>, depth: number, within: "top" | "quote", parent: string) => {
     children.forEach((block, index) => {
+      if (block.kind !== "section" && children[index - 1]?.kind === "section") {
+        push("", []);
+        push(continued(depth - 1, parent), []);
+      }
       if (index > 0 || within === "top") push("", []);
       switch (block.kind) {
         case "paragraph": {
@@ -109,8 +118,9 @@ export function project(document: _Document_Doctor_): _Projection_ {
         }
         case "section": {
           const written = content(block.heading);
-          holding(block.id, `#${depth} ${written.startsWith("\\") ? "\\" : ""}`, written);
-          blocks(block.children, depth + 1, within);
+          const escape = written.startsWith("\\") ? "\\" : "";
+          holding(block.id, `#${depth} ${escape}`, written);
+          blocks(block.children, depth + 1, within, `${escape}${written}`);
           break;
         }
         case "list":
@@ -125,7 +135,7 @@ export function project(document: _Document_Doctor_): _Projection_ {
           const written = content(block.reference);
           places.push({ holder: { kind: "node", node: block.id }, line: lines.length, start: fence.length + (written === "" ? 0 : 1) });
           push(written === "" ? fence : `${fence} ${written}`, [block.id]);
-          blocks(block.children, 1, "quote");
+          blocks(block.children, 1, "quote", written);
           push(fence, [block.id]);
           break;
         }
@@ -133,9 +143,14 @@ export function project(document: _Document_Doctor_): _Projection_ {
     });
   };
 
-  blocks(document.content.children, 1, "top");
+  blocks(document.content.children, 1, "top", content(document.content.title));
   return { lines, places, owners };
 }
+
+// the line saying a section's parent goes on after it: its heading again, as
+// it's written, at its depth, with (contd.)
+export const continued = (depth: number, heading: string) => `#${depth} ${heading} (contd.)`;
+export const continuedPattern = /^#(\d+) (.*) \(contd\.\)$/;
 
 interface _Row_Projection_ {
   text: string;
@@ -204,9 +219,11 @@ export function parseProjection(
     return make(at(0, 1).items, entries[0]?.ordered ?? false);
   };
 
-  const parseBlocks = (rows: Array<_Row_Projection_>): Array<_Block_Document_> => {
+  // what's given's blocks, under its heading as written, the title or a
+  // quote's reference, for a continuation back to it to match
+  const parseBlocks = (rows: Array<_Row_Projection_>, parent: string): Array<_Block_Document_> => {
     const top: Array<_Block_Document_> = [];
-    const sections: Array<{ level: number; children: Array<_Block_Document_> }> = [];
+    const sections: Array<{ level: number; children: Array<_Block_Document_>; written: string }> = [];
     const attach = (block: _Block_Document_) => (sections.at(-1)?.children ?? top).push(block);
     let index = 0;
     while (index < rows.length) {
@@ -251,7 +268,7 @@ export function parseProjection(
         }
         const id = idOf(row);
         assigned[(rows[close]?.number ?? row.number) - 1] = [id];
-        const [first, ...rest] = parseBlocks(rows.slice(index + 1, close));
+        const [first, ...rest] = parseBlocks(rows.slice(index + 1, close), opened[2] ?? "");
         index = close + 1;
         if (first === undefined) {
           problems.push(`line ${row.number}: this quote has nothing in it yet`);
@@ -276,6 +293,17 @@ export function parseProjection(
         index = close + 1;
         continue;
       }
+      // A section's parent going on after it: the sections deeper than the
+      // parent close, and what follows is the parent's. Only its own heading
+      // again says so; another's, with (contd.), is a section of that name.
+      const going = continuedPattern.exec(row.text);
+      const level = Number(going?.[1] ?? -1);
+      const open = level === 0 ? parent : sections.findLast((section) => section.level === level)?.written;
+      if (going !== null && open !== undefined && open === going[2]) {
+        while ((sections.at(-1)?.level ?? 0) > level) sections.pop();
+        index += 1;
+        continue;
+      }
       const heading = /^#(\d+)(?: (.*))?$/.exec(row.text);
       if (heading !== null) {
         const level = Number(heading[1]);
@@ -288,7 +316,7 @@ export function parseProjection(
         const id = idOf(row);
         const children: Array<_Block_Document_> = [];
         attach({ kind: "section", id, heading: read({ kind: "node", node: id }, unescape(heading[2] ?? ""), row.number), children });
-        sections.push({ level, children });
+        sections.push({ level, children, written: heading[2] ?? "" });
         index += 1;
         continue;
       }
@@ -319,7 +347,7 @@ export function parseProjection(
   const titled = /^#0(?: (.*))?$/.exec(titleRow?.text ?? "");
   if (titled === null) problems.push("line 1: a document starts with its title, as #0 and then the title");
   const title = read({ kind: "title" }, titled?.[1] ?? "", 1);
-  const children = parseBlocks(rest);
+  const children = parseBlocks(rest, titled?.[1] ?? "");
   const [problem, ...more] = problems;
   return problem === undefined
     ? { kind: "parsed", value: { body: { title, children }, owners: assigned } }
