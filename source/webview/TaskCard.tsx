@@ -184,12 +184,12 @@ function Stat({ label, value, more }: { label: string; value: string; more: stri
 }
 
 // How far through its proposals a task, or a document, is: how many are
-// decided of those still in play, each state's count when it's hovered; or,
+// resolved, accepted or rejected, of those still in play, each state's count when it's hovered; or,
 // with none, what's to say of that.
 function Progress({ label, proposals, none }: { label: string; proposals: _Proposals_Status_; none: string }) {
   const decided = proposals.accepted + proposals.rejected;
   const total = decided + proposals.proposed + proposals.revising;
-  return <Stat label={label} value={total === 0 ? none : `${decided} of ${total} decided`} more={describeProposals(proposals).join(", ")} />;
+  return <Stat label={label} value={total === 0 ? none : `${decided} of ${total} resolved`} more={describeProposals(proposals).join(", ")} />;
 }
 
 // the proposals by state, the empty ones left out
@@ -327,9 +327,10 @@ export function TaskCard({
         return (
           <section className={styles.part}>
             <div className={styles.stats}>
-              <Progress label="document proposals" proposals={shown.proposals} none="none here" />
+              <Progress label="document proposals" proposals={shown.proposals} none="none" />
             </div>
-            <p className={styles.heading}>document changes</p>
+            {/* what changes here, when the agent's said */}
+            {said.length === 0 ? null : <p className={styles.heading}>document changes</p>}
             {said.map((summary) => (
               <p className={styles.note}>{summary}</p>
             ))}

@@ -218,7 +218,6 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
         <span className={styles.taskItem} {...hover}>
           {markOf(task)}
           <span className={styles.taskId}>{task.task}</span>
-          <span>· waiting on you</span>
         </span>
       );
     }
@@ -235,6 +234,19 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
         {markOf(task)}
         <span className={styles.shimmer}>{task.task}</span>
       </span>
+    );
+  };
+  // How far through its proposals here the active task is, beside it, or, in
+  // a document it doesn't touch, that it has none here.
+  const progressHere = () => {
+    if (!active) return null;
+    const [here] = shownHere;
+    if (here === undefined) return null;
+    const { proposed, revising, accepted, rejected } = here.proposals;
+    const total = proposed + revising + accepted + rejected;
+    if (total === 0) return <span title="this task has no proposals in this document">no proposals</span>;
+    return (
+      <span title={`this document's proposals: ${describeProposals(here.proposals).join(", ")}`}>{`${accepted + rejected} of ${total} resolved`}</span>
     );
   };
   // The active task's actions, for its card's footers: the task's, its
@@ -302,6 +314,7 @@ export function TextEditor({ config }: { config: _TEXT_Config__Webview_ }) {
             </button>
           ) : null}
           {taskStatus()}
+          {progressHere()}
           {drafted === "" ? null : <span>{drafted}</span>}
           {load.kind === "loading" ? <span>opening…</span> : null}
           {load.kind === "editing" && waiting(load.session) > 0 ? <span>saving…</span> : null}
